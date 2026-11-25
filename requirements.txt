@@ -1,4 +1,8 @@
-aiogram>=3.34,<4
+# aiogram: the door does not depend on the newest version (unknown methods and update fields pass through).
+# 3.32+ needs Python 3.11 (Ubuntu 22.04 has 3.10: pip picks 3.31); 3.33+ cannot even be imported on Python
+# 3.11.2 (Debian 12: a typing bug with pydantic's FailFast in a Union), so 3.11 and older stay below 3.33.
+aiogram>=3.31,<4 ; python_version >= "3.12"
+aiogram>=3.31,<3.33 ; python_version < "3.12"
 aiohttp>=3.9
 # Matrix door, without end-to-end encryption: no [e2e] extra, so no libolm / vodozemac
 matrix-nio==0.26.0

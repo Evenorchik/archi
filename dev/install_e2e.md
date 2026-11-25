@@ -42,3 +42,24 @@ Sign Claude Code in inside the container (`docker exec -it archi-e2e archi setup
 Pairing from a real Telegram account and the first-run message in Telegram, completing a real
 `claude setup-token` (the token capture itself) and a Codex device or browser sign-in, the voice key
 prompt, a real conversation.
+
+## Fresh installs on three systems (before publishing, 2026-11-25)
+Each in a new systemd container with only curl and ca-certificates, the installer fed through a pipe
+(`cat install.sh | bash`, the `curl | bash` case), `ARCHI_SOURCE` pointing at the checkout, a private test bot.
+- **Ubuntu 24.04 (Python 3.12), interactive.** A pty driver answered every question the way a person types
+  (token hidden, provider 1, keep the existing Claude sign-in, no voice key): packages, code, venv, the official
+  Claude Code installer, config 0600 in a 0700 directory, `archi-telegram` enabled and polling,
+  `archi-learn-curator.timer` enabled, the pairing code and link, a 20 s pairing wait, the summary; exit 0.
+  `archi status` and `archi validate` clean; the checkout clean (`git status` empty).
+  **Re-run** on the same machine: packages and code kept, "Keep it?" for the existing config, service and
+  timer reinstalled, the same pairing code; exit 0.
+- **Ubuntu 22.04 (Python 3.10), non-interactive.** The first run failed at the Python requirements:
+  aiogram 3.32+ needs Python 3.11. requirements.txt now lets pip pick aiogram 3.31 there; the door does not
+  need newer (an `Update` with `stopped_message_generation` and topic fields survives aiogram 3.31's parsing).
+  Then exit 0, the door polling, 228 tests passing on Python 3.10.
+- **Debian 12 (Python 3.11.2), non-interactive.** The door did not start: aiogram 3.33+ cannot be imported on
+  Python 3.11.2 (`TypeError: unhashable type: 'FailFast'`, a typing bug with pydantic's FailFast in a Union);
+  3.32 imports. requirements.txt keeps Python 3.11 and older below aiogram 3.33. Then exit 0, the door
+  polling, 228 tests passing on Python 3.11.2.
+The Claude sign-in was the CLI's own login copied in (the "already signed in" path); `claude setup-token`
+itself is covered above, up to the OAuth page.
