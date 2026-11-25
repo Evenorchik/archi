@@ -13,8 +13,10 @@ import os
 import pty
 import re
 import select
+import signal
 import sys
 import termios
+import time
 import tty
 
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()*+][0-9A-Za-z]"
@@ -118,10 +120,91 @@ def strip_ansi(text: str) -> str:
     return ANSI.sub("", text).replace("\r\n", "\n").replace("\r", "\n")
 
 
+_CSI = re.compile(r"\x1b\[([0-?]*)[ -/]*([@-~])")
+
+
+def render(raw: str) -> str:
+    """The text a terminal would show after `raw`: a small screen emulator for what full-screen CLI
+    renderers send (cursor up/down/left/right, column jumps, line and screen erases). Escape stripping
+    is not enough for them: they place words with "move to column N" instead of spaces and redraw in
+    place, so stripped output glues words together and repeats every redraw."""
+    lines: list[list[str]] = [[]]
+    row = col = 0
+    i, n = 0, len(raw)
+
+    def line() -> list[str]:
+        while len(lines) <= row:
+            lines.append([])
+        return lines[row]
+
+    while i < n:
+        ch = raw[i]
+        if ch == "\x1b":
+            m = _CSI.match(raw, i)
+            if m:
+                params, final = m.group(1), m.group(2)
+                nums = [int(x) if x.isdigit() else 0 for x in params.lstrip("?").split(";")] if params else []
+                k = (nums[0] if nums else 0) or 1
+                if final == "A":
+                    row = max(0, row - k)
+                elif final == "B":
+                    row += k
+                elif final == "C":
+                    col += k
+                elif final == "D":
+                    col = max(0, col - k)
+                elif final == "G":
+                    col = k - 1
+                elif final in "Hf" and not params.startswith("?"):
+                    row, col = (nums[0] or 1) - 1 if nums else 0, (nums[1] or 1) - 1 if len(nums) > 1 else 0
+                elif final == "K":
+                    cur, mode = line(), (nums[0] if nums else 0)
+                    if mode == 2:
+                        cur.clear()
+                    elif mode == 1:
+                        cur[:col] = [" "] * min(col, len(cur))
+                    else:
+                        del cur[col:]
+                elif final == "J":
+                    mode = nums[0] if nums else 0
+                    if mode in (2, 3):
+                        lines[:] = [[]]
+                        row = col = 0
+                    elif mode == 0:
+                        del line()[col:]
+                        del lines[row + 1:]
+                i = m.end()
+                continue
+            o = ANSI.match(raw, i)
+            i = o.end() if o else i + 1
+            continue
+        if ch == "\r":
+            col = 0
+        elif ch == "\n":
+            row += 1
+            line()
+        elif ch == "\b":
+            col = max(0, col - 1)
+        elif ch >= " " or ch == "\t":
+            cur = line()
+            if len(cur) < col:
+                cur.extend(" " * (col - len(cur)))
+            if col < len(cur):
+                cur[col] = ch
+            else:
+                cur.append(ch)
+            col += 1
+        i += 1
+    return "\n".join("".join(x).rstrip() for x in lines)
+
+
 def run_captured(argv: list[str], env: dict | None = None) -> tuple[int, str]:
     """Run `argv` on a pseudo-terminal wired to ours: the user sees it and types into it as usual (an
-    interactive login needs a real terminal), and everything it printed is returned too, without ANSI
-    escapes. The child gets our window size, so what it draws looks right on the user's screen."""
+    interactive login needs a real terminal), and the final screen text is returned too (see render()).
+    The child gets our window size, so what it draws looks right on the user's screen.
+
+    Ctrl+C three times within two seconds stops the child: some CLI screens (claude setup-token) only
+    clear their input on Ctrl+C and offer no other way out."""
     stdin_fd, stdout_fd = 0, 1
     pid, master = pty.fork()
     if pid == 0:   # child: the pty slave is its controlling terminal and stdio
@@ -140,9 +223,14 @@ def run_captured(argv: list[str], env: dict | None = None) -> tuple[int, str]:
         saved = termios.tcgetattr(stdin_fd)
         tty.setraw(stdin_fd)
     out = bytearray()
+    presses: list[float] = []
+    kill_at = None
     try:
         watch = [master, stdin_fd]
         while True:
+            if kill_at is not None and time.monotonic() >= kill_at:
+                _signal_group(pid, signal.SIGKILL)
+                kill_at = None
             try:
                 ready, _, _ = select.select(watch, [], [], 0.5)
             except InterruptedError:
@@ -158,13 +246,30 @@ def run_captured(argv: list[str], env: dict | None = None) -> tuple[int, str]:
                 out += data
             if stdin_fd in ready:
                 data = os.read(stdin_fd, 4096)
-                if data:
-                    os.write(master, data)
-                else:
+                if not data:
                     watch.remove(stdin_fd)
+                    continue
+                if b"\x03" in data:
+                    now = time.monotonic()
+                    presses = [t for t in presses if now - t < 2.0] + [now] * data.count(b"\x03")
+                    if len(presses) >= 3:
+                        _signal_group(pid, signal.SIGTERM)
+                        kill_at = time.monotonic() + 2.0
+                        presses.clear()
+                os.write(master, data)
     finally:
         if saved is not None:
             termios.tcsetattr(stdin_fd, termios.TCSAFLUSH, saved)
         os.close(master)
         _, status = os.waitpid(pid, 0)
-    return os.waitstatus_to_exitcode(status), strip_ansi(out.decode("utf-8", "replace"))
+    return os.waitstatus_to_exitcode(status), render(out.decode("utf-8", "replace"))
+
+
+def _signal_group(pid: int, sig: int) -> None:
+    try:
+        os.killpg(pid, sig)      # the child leads its own session (pty.fork), helpers included
+    except OSError:
+        try:
+            os.kill(pid, sig)
+        except OSError:
+            pass

@@ -130,7 +130,7 @@ def cli_version(provider: str) -> str:
 def find_oauth_token(text: str) -> str | None:
     """The token `claude setup-token` printed. Its renderer wraps a long token onto the next line(s) of a
     narrow terminal, so a match that runs to the end of its line takes the following token-only lines."""
-    lines = term.strip_ansi(text).split("\n")
+    lines = term.render(text).split("\n")
     found = None
     for i, raw in enumerate(lines):
         line = raw.strip(BORDER)
@@ -280,7 +280,7 @@ def login_claude(cfg: Config, ni: bool) -> None:
     binary = cli_path("claude")
     say("Sign in with your Claude subscription. `claude setup-token` shows a link: open it in a browser on any\n"
         "device, approve, and paste the code you get back here. It then prints a token valid for one year,\n"
-        "which Archi keeps in config/archi.env.")
+        "which Archi keeps in config/archi.env. (To cancel it, press Ctrl+C three times.)")
     token = None
     try:
         _rc, shown = term.run_captured([binary, "setup-token"], env=cli_env(drop_token=True))
@@ -300,8 +300,8 @@ def login_claude(cfg: Config, ni: bool) -> None:
             return
         say(f"  ✗ The token did not work: {why}")
     say("Trying the regular sign-in instead (claude auth login): it also shows a link; open it, sign in and\n"
-        "paste the code back here.")
-    subprocess.run([binary, "auth", "login", "--claudeai"], env=cli_env(drop_token=True))
+        "paste the code back here. (To cancel it, press Ctrl+C three times.)")
+    term.run_captured([binary, "auth", "login", "--claudeai"], env=cli_env(drop_token=True))
     ok, why = test_claude(None)
     if not ok:
         raise SetupError(f"Claude Code still does not answer: {why}")

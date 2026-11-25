@@ -241,6 +241,18 @@ def test_find_oauth_token_unwrapped_wrapped_and_framed():
     assert term.strip_ansi("\x1b7\x1b[1CWelcome\x1b[1Cto\x1b8") == " Welcome to"
 
 
+def test_render_follows_cursor_addressed_output():
+    # Claude Code's real output: words placed with "move to column N", redraws in place (from a live capture)
+    raw = ("\x1b[?25l\x1b[38;5;174mWelcome\x1b[9Gto\x1b[12GClaude\x1b[19GCode\x1b[39m\r\r\n"
+           "\x1b[2G\x1b[1mThis\x1b[7Gwill\x1b[12Gguide\r\r\n"
+           "\x1b[3Ccode\r\r\n")
+    assert term.render(raw).split("\n") == ["Welcome to Claude Code", " This will guide", "   code", ""]
+    redraw = "Working 1\r\nstep a\x1b[1A\r\x1b[2KWorking 2\r\n\x1b[2Kstep b"
+    assert term.render(redraw) == "Working 2\nstep b"
+    typed = "box: \x1b[3D\x1b[2B\r\x1b[3C\x1b[2Aabc"        # the input box echo seen live
+    assert term.render(typed).startswith("boxabc")
+
+
 def test_find_login_url():
     text = ("Starting local login server on http://localhost:1455.\nIf your browser did not open, navigate to "
             "this URL to authenticate:\n\nhttps://auth.openai.com/oauth/authorize?response_type=code&state=x\n\n"
