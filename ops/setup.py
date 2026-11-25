@@ -243,7 +243,6 @@ def choose_provider(cfg: Config, ni: bool, provider: str | None = None) -> str:
             provider = ask_choice("Choose 1 or 2:", PROVIDER_CHOICES, current)
     if provider not in PROVIDERS:
         raise SetupError(f"unknown provider {provider!r} (claude or codex)")
-    cfg.set("PROVIDER", provider)
     return provider
 
 
@@ -412,6 +411,9 @@ def step_provider(cfg: Config, ni: bool, provider: str | None = None) -> str:
         login_claude(cfg, ni)
     else:
         login_codex(cfg, ni)
+    # Switch only now: a provider whose CLI is missing or not signed in would make every turn fail, so an
+    # aborted or failed sign-in leaves the previous provider in place.
+    cfg.set("PROVIDER", provider)
     return provider
 
 

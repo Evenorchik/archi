@@ -282,6 +282,24 @@ def test_noninteractive_onboarding_writes_the_config(tmp_path, monkeypatch):
     assert Config(tmp_path).get("PAIRING_CODE") == code
 
 
+def test_failed_sign_in_keeps_the_previous_provider(tmp_path, monkeypatch):
+    """Switching to a provider whose sign-in did not finish would make every turn fail."""
+    cfg = Config(tmp_path)
+    cfg.set("PROVIDER", "claude")
+    monkeypatch.setenv("ARCHI_SKIP_CLI_INSTALL", "1")
+
+    def refused(cfg, ni):
+        raise setup.SetupError("the sign-in was cancelled")
+
+    monkeypatch.setattr(setup, "login_codex", refused)
+    with pytest.raises(setup.SetupError):
+        setup.step_provider(cfg, ni=True, provider="codex")
+    assert Config(tmp_path).get("PROVIDER") == "claude"
+    monkeypatch.setattr(setup, "login_codex", lambda cfg, ni: None)
+    assert setup.step_provider(cfg, ni=True, provider="codex") == "codex"
+    assert Config(tmp_path).get("PROVIDER") == "codex"
+
+
 def test_voice_key_rejected_is_not_stored(tmp_path, monkeypatch):
     cfg = Config(tmp_path)
     monkeypatch.setattr(setup, "check_openai_key", lambda k: False)
