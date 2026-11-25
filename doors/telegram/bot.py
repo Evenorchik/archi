@@ -626,7 +626,7 @@ class Door:
                     return
                 await self.deliver(key, res, st)
                 if res.ok and res.session_id:
-                    await self._after_turn(key, provider, res.session_id, len(st.steps))
+                    await self._after_turn(key, provider, res.session_id, prompt, res.answer, st.steps)
             except asyncio.CancelledError:
                 keep_marker = True
                 raise
@@ -634,10 +634,12 @@ class Door:
                 if not keep_marker:
                     running.finish(marker)
 
-    async def _after_turn(self, key: str, provider: str, session_id: str, tool_calls: int) -> None:
+    async def _after_turn(self, key: str, provider: str, session_id: str, prompt: str, answer: str,
+                          steps: list[str]) -> None:
         try:
             kind = await asyncio.to_thread(afterturn.turn_finished, DOOR, key, provider=provider,
-                                           session_id=session_id, tool_calls=tool_calls, home=self.home)
+                                           session_id=session_id, tool_calls=len(steps), home=self.home,
+                                           prompt=prompt, answer=answer, steps=list(steps))
             if kind:
                 self.log("learning review started", key, kind)
         except Exception as e:  # noqa: BLE001 - the learning loop must never break the door

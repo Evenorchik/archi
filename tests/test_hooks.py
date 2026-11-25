@@ -73,8 +73,12 @@ def test_learning_hook_after_delivery_and_learn_command(tmp_path, monkeypatch):
         await settle(door)
 
     go(scenario())
-    assert calls == [("telegram", f"tg:{OWNER}:77",
-                      dict(provider="claude", session_id="sess-1", tool_calls=1, home=door.home))]
+    assert len(calls) == 1
+    d, key, kw = calls[0]
+    assert (d, key) == ("telegram", f"tg:{OWNER}:77")
+    assert kw["provider"] == "claude" and kw["session_id"] == "sess-1" and kw["tool_calls"] == 1
+    assert kw["home"] == door.home and kw["prompt"] == "hello" and kw["answer"] == "Hi from the agent"
+    assert kw["steps"] == ["Reading notes.md"]
     assert api.texts()[-1] == f"review started for tg:{OWNER}:77"
 
 
