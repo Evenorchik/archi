@@ -9,10 +9,10 @@ Operations
   archi validate                     syntax, imports, dry start, config sanity; non-zero on failure
   archi update [--no-restart]        pull upstream, keep local changes, validate, restart when idle
   archi identity set-name "<name>"   name the agent: config, CLAUDE.md, Telegram bot name
-  archi setup [telegram|provider [claude|codex]|voice]
+  archi setup [telegram|provider [claude|codex]|voice|matrix]
                                      onboarding (the installer runs it) or one of its steps
   archi pair [--reset] [--wait S]    pairing code for the owner's Telegram account
-  archi service install              write, enable and (re)start archi-telegram.service
+  archi service install [--door D]   write, enable and (re)start the door services
   archi version
 
 Telegram (for the agent, inside a turn)
@@ -20,6 +20,12 @@ Telegram (for the agent, inside a turn)
   archi tg topic rename "<name>"     rename the current topic (ARCHI_THREAD_ID)
   archi tg topics [--all]            known topics / conversations
   archi tg send "<text>" [--chat C] [--thread T|main]
+
+Matrix (for the agent, inside a turn)
+  archi mx room create "<name>"      create an unencrypted room and invite the owner
+  archi mx room rename "<name>"      rename the current room (ARCHI_ROOM_ID) or --room
+  archi mx rooms [--deleted]         known rooms / conversations
+  archi mx send "<text>" [--room R] [--notice]
 
 Config
   archi config get KEY [--reveal]
@@ -34,6 +40,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
 from core.config import DEFAULTS, KNOWN_KEYS, Config, mask  # noqa: E402
+from doors.matrix import cli as mx_cli  # noqa: E402
 from doors.telegram import cli as tg_cli  # noqa: E402
 from ops import cli as ops_cli  # noqa: E402
 
@@ -63,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     ops_cli.add_parsers(sub)
     tg_cli.add_parser(sub)
+    mx_cli.add_parser(sub)
     c = sub.add_parser("config", help="read or change config/archi.env")
     csub = c.add_subparsers(dest="config_cmd", required=True)
     g = csub.add_parser("get")
@@ -77,6 +85,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_config(args)
     if args.cmd == "tg":
         return tg_cli.run(args)
+    if args.cmd == "mx":
+        return mx_cli.run(args)
     return ops_cli.run(args)
 
 

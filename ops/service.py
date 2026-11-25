@@ -20,8 +20,10 @@ from pathlib import Path
 from core import running
 from core.config import CODE_DIR, Config
 
-DOORS = {"telegram": "Telegram"}            # door name -> title; matrix joins here when it ships
+DOORS = {"telegram": "Telegram", "matrix": "Matrix"}      # door name -> title
 UNIT_DIR = Path(os.environ.get("ARCHI_UNIT_DIR", "/etc/systemd/system"))
+SYSTEMD_UNIT_DIRS = ("/etc/systemd/system", "/run/systemd/system", "/usr/local/lib/systemd/system",
+                     "/usr/lib/systemd/system", "/lib/systemd/system")
 IN_TURN_MIN_DELAY_S = 3
 
 UNIT_TEMPLATE = """\
@@ -80,6 +82,25 @@ def have_systemd() -> bool:
     return Path("/run/systemd/system").is_dir() and shutil.which("systemctl") is not None
 
 
+def systemd_usable() -> bool:
+    """systemd runs here AND reads units from UNIT_DIR. With ARCHI_UNIT_DIR pointing anywhere else (tests, a
+    staging copy) unit files are written there, but systemctl is never asked to load, start or restart them:
+    it would act on the host's units of the same name instead."""
+    if not have_systemd():
+        return False
+    try:
+        unit_dir = UNIT_DIR.resolve()
+    except OSError:
+        return False
+    return any(unit_dir == Path(d).resolve() for d in SYSTEMD_UNIT_DIRS)
+
+
+def configured_doors(cfg: Config | None = None) -> list[str]:
+    """Doors with credentials in the config: Telegram always (the primary door), Matrix once it is set up."""
+    cfg = cfg or Config()
+    return ["telegram"] + (["matrix"] if cfg.get("MATRIX_ACCESS_TOKEN") else [])
+
+
 def systemctl(*args: str, timeout: float = 60, check: bool = False) -> subprocess.CompletedProcess:
     return subprocess.run(["systemctl", *args], capture_output=True, text=True, timeout=timeout, check=check)
 
@@ -109,6 +130,14 @@ def install_unit(door: str = "telegram", *, start: bool = True, home: Path | str
     path = UNIT_DIR / unit_name(door)
     text = unit_text(door, home)
     changed = not path.exists() or path.read_text() != text
+    if not systemd_usable():
+        UNIT_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        path.chmod(0o644)
+        print(f"{unit_name(door)}: written to {UNIT_DIR}, which systemd does not read (ARCHI_UNIT_DIR), so it was "
+              f"not started; run the door by hand: ARCHI_HOME={home or Config().home} {venv_python()} -m "
+              f"doors.{door}")
+        return 0
     if changed:
         path.write_text(text)
         path.chmod(0o644)
@@ -223,6 +252,10 @@ def restart(*, when_idle: bool = False, delay: float = 0, max_wait: float | None
     home = Path(home or Config().home)
     if not have_systemd():
         print("systemd is not running here; restart the door process yourself", file=sys.stderr)
+        return 1
+    if not systemd_usable():
+        print(f"the door units in {UNIT_DIR} (ARCHI_UNIT_DIR) are not systemd's; restart the door processes "
+              "yourself", file=sys.stderr)
         return 1
     doors = installed_doors()
     if not doors:

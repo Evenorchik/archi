@@ -109,6 +109,8 @@ def check_doors(rep: Report, code_dir: Path, home: Path, cfg: Config) -> None:
     for door in DOORS:
         if door == "telegram" and not cfg.get("TELEGRAM_BOT_TOKEN"):
             continue   # reported by the config check
+        if door == "matrix" and not cfg.get("MATRIX_ACCESS_TOKEN"):
+            continue   # the optional door is not set up
         rc, out = _run([py, "-m", f"doors.{door}", "--check"], code_dir, home)
         last = out.splitlines()[-1] if out else ""
         if rc == 0:
@@ -148,8 +150,29 @@ def check_config(rep: Report, cfg: Config) -> None:
     key = cfg.get("OPENAI_API_KEY")
     if key and not key.startswith("sk-"):
         rep.warn("config: OPENAI_API_KEY does not look like an OpenAI key")
+    check_matrix_config(rep, cfg)
     if rep.failed == before:
         rep.ok(f"config: {cfg.path}")
+
+
+def check_matrix_config(rep: Report, cfg: Config) -> None:
+    """The optional Matrix door: nothing to check until one of its keys is set."""
+    keys = ("MATRIX_HOMESERVER", "MATRIX_USER_ID", "MATRIX_ACCESS_TOKEN", "MATRIX_OWNER_ID")
+    if not any(cfg.get(k) for k in keys):
+        return
+    mxid = re.compile(r"^@[^:\s]+:\S+$")
+    hs = cfg.get("MATRIX_HOMESERVER")
+    if not hs.startswith(("http://", "https://")):
+        rep.fail(f"config: MATRIX_HOMESERVER={hs!r} is not an http(s) URL (run `archi setup matrix`)")
+    if not mxid.match(cfg.get("MATRIX_USER_ID")):
+        rep.fail("config: MATRIX_USER_ID is not a Matrix user id (run `archi setup matrix`)")
+    if not cfg.get("MATRIX_ACCESS_TOKEN"):
+        rep.fail("config: MATRIX_ACCESS_TOKEN is not set (run `archi setup matrix`)")
+    owner = cfg.get("MATRIX_OWNER_ID")
+    if not owner:
+        rep.warn("config: MATRIX_OWNER_ID is not set: nobody can use the Matrix door")
+    elif not mxid.match(owner):
+        rep.fail(f"config: MATRIX_OWNER_ID={owner!r} is not a Matrix user id (@name:server)")
 
 
 def check_layout(rep: Report, code_dir: Path) -> None:
