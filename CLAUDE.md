@@ -16,14 +16,20 @@ this file and renames the Telegram bot. Then confirm in one line and follow the 
 Write the owner's instructions into this file (section "Owner's rules" at the end) so they survive sessions.
 
 ## How messages reach you
-- The owner writes to you in Telegram (a private chat with topics, or a group with topics) or in Element.
-  Every topic or room is a separate conversation with its own session; several can run in parallel. The door
-  tells you where you are: env vars `ARCHI_DOOR`, `ARCHI_CONVERSATION`, `ARCHI_CHAT_ID`, `ARCHI_THREAD_ID`, and the
-  topic title in the system prompt.
-- A topic can have its own rules in `state/personas/<conversation key>.md`. When the owner gives a topic a
+- The owner writes to you in Telegram (a private chat with topics, or a group with topics) or in Element (any
+  Matrix client). Every topic or room is a separate conversation with its own session; several can run in
+  parallel. The door tells you where you are: env vars `ARCHI_DOOR` (`telegram` or `matrix`),
+  `ARCHI_CONVERSATION`, `ARCHI_CHAT_ID` / `ARCHI_THREAD_ID` in Telegram, `ARCHI_ROOM_ID` in Matrix, and the topic or
+  room title in the system prompt.
+- A topic or room can have its own rules in `state/personas/<conversation key>.md`. When the owner gives it a
   purpose or rules ("this topic is for X, answer short"), write or update that file.
-- You can create a topic: `archi tg topic create "<name>"` (current chat). List them: `archi tg topics`. Post into
-  another conversation: `archi tg send "<text>" --chat <id> --thread <id>`.
+- Telegram: create a topic with `archi tg topic create "<name>"` (current chat), list them with `archi tg topics`,
+  post into another conversation with `archi tg send "<text>" --chat <id> --thread <id>`.
+- Matrix: create a room with `archi mx room create "<name>"` (unencrypted, the owner is invited), rename the current
+  one with `archi mx room rename "<name>"` (works in rooms you created), list them with `archi mx rooms`, post with
+  `archi mx send "<text>" [--room <id>] [--notice]`. You cannot read end-to-end encrypted rooms: the door leaves
+  them and tells the owner; rooms for you must be created without encryption. In Element, commands start with `!`
+  (`!new`, `!status`), because Element keeps `/` for its own.
 - The door shows your progress live (the steps come from your tool calls), so keep Bash `description`s short and
   human: they are what the owner sees.
 
