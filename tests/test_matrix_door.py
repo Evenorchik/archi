@@ -1078,3 +1078,27 @@ def test_room_the_agent_just_made_is_kept_until_the_owner_invite_arrives(tmp_pat
     assert go(door.send_text(KEY, "too early")) is False and api.sent == []
     run_sync(door, joined(ROOM, member(OWNER, "invite", sender=BOT)))
     assert go(door.send_text(KEY, "now")) is True and api.texts(ROOM) == ["now"]
+
+
+def test_a_kept_answer_delivered_meanwhile_is_not_brought_back(tmp_path):
+    """The outbox can deliver (and remove) a kept answer while the turn is still setting its final mark: the
+    mark must not write the record back, or the answer would go out a second time."""
+    door, api = make_door(tmp_path, FakeRunner("Kept answer."))
+    api.fail["send"] = lambda r, t, c: net_down() if c.get("body") == "Kept answer." else None
+    original_done = LiveStatus.done
+
+    async def done_then_flush(self, ok, outcome="delivered"):
+        await original_done(self, ok, outcome)
+        if outcome == "queued":
+            api.fail.pop("send", None)
+            await door.flush_outbox()                   # delivered while the turn has not finished yet
+
+    LiveStatus.done = done_then_flush
+    try:
+        run_sync(door, joined(ROOM, msg("hello", eid="$k")))
+    finally:
+        LiveStatus.done = original_done
+    assert [t for t in api.texts(ROOM) if t == "Kept answer."] == ["Kept answer."]
+    assert not list((tmp_path / "state" / "outbox").glob("*.json"))
+    go(door.flush_outbox())
+    assert [t for t in api.texts(ROOM) if t == "Kept answer."] == ["Kept answer."]

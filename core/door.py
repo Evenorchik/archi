@@ -529,7 +529,7 @@ class BaseDoor:
                 outcome = await self.deliver(key, res, st, src=src, after=after, kept=kept)
                 await self._live(live.done(bool(res.ok), outcome))
                 if outcome == QUEUED:
-                    self._mark_kept(live, kept)
+                    await self._mark_kept(key, live, kept)
                 if outcome == DELIVERED and after:
                     await self._after_turn(key, **after)
                 return outcome
@@ -549,17 +549,22 @@ class BaseDoor:
         except Exception as e:  # noqa: BLE001
             self.log("live status failed", repr(e))
 
-    def _mark_kept(self, live, kept: list) -> None:
-        """Remember the live status's final mark in the kept answer (a door swaps it when it is delivered)."""
+    async def _mark_kept(self, key: str, live, kept: list) -> None:
+        """Remember the live status's final mark in the kept answer (a door swaps it when it is delivered).
+        Under the conversation's delivery lock and only while the record still exists: a flush that delivered
+        and removed it in the meantime must not see it come back (the answer would go out twice)."""
         mark = getattr(live, "final_mark", None)
         if not mark or not kept or not isinstance(kept[0], Path):
             return
-        try:
-            record = json.loads(kept[0].read_text(encoding="utf-8"))
-            record["mark"] = mark
-            atomic_write(kept[0], json.dumps(record, ensure_ascii=False) + "\n", mode=0o600)
-        except (OSError, ValueError):
-            pass
+        async with self._delivery_lock(key):
+            try:
+                if not kept[0].exists():
+                    return
+                record = json.loads(kept[0].read_text(encoding="utf-8"))
+                record["mark"] = mark
+                atomic_write(kept[0], json.dumps(record, ensure_ascii=False) + "\n", mode=0o600)
+            except (OSError, ValueError):
+                pass
 
     async def _after_turn(self, key: str, provider: str, session_id: str, prompt: str, answer: str,
                           steps: list[str]) -> None:
