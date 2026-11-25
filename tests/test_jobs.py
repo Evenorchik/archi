@@ -156,6 +156,8 @@ def test_active_job_limit_and_force(jhome):
 
 
 def test_a_job_needs_a_conversation_and_reports_to_its_door(jhome, monkeypatch):
+    with pytest.raises(jobs.JobError, match="working directory does not exist"):
+        jobs.launch("run", shell="true", cwd=str(jhome / "missing"))
     monkeypatch.delenv("ARCHI_CONVERSATION")
     with pytest.raises(jobs.JobError, match="conversation"):
         jobs.launch("run", shell="true")

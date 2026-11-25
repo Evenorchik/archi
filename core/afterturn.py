@@ -106,8 +106,9 @@ def spawn_review(home: str | os.PathLike, key: str, kind: str, *, explicit: bool
     if explicit:
         argv.append("--explicit")
     name = detach.unit_name("learn", f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}")
+    # A short limit: the door waits for this inside the conversation's lock (a hung systemd-run falls back).
     return detach.spawn(argv, name=name, description=f"Archi: learning review ({kind})", env=review_env(home),
-                        cwd=str(home), log_path=home / "logs" / "learn.log", nice=10)
+                        cwd=str(home), log_path=home / "logs" / "learn.log", nice=10, timeout=5)
 
 
 def review_now(door: str, key: str, *, provider: str, session_id: str | None,

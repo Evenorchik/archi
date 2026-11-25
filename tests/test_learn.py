@@ -205,7 +205,7 @@ def test_spawn_review_runs_the_script_detached_without_secrets(env, monkeypatch)
     assert afterturn.spawn_review(env.home, KEY, "memory").ok
     assert seen["argv"][1].endswith("tools/learn/review.py") and seen["argv"][-4:] == ["--conversation", KEY,
                                                                                         "--kind", "memory"]
-    assert seen["name"].startswith("archi-test-learn-") and seen["nice"] == 10
+    assert seen["name"].startswith("archi-test-learn-") and seen["nice"] == 10 and seen["timeout"] <= 5
     assert seen["env"]["ARCHI_HOME"] == str(env.home) and seen["env"]["ARCHI_MEMORY_DIR"] == str(env.mem)
     assert not any("TOKEN" in k or v == "t" * 40 for k, v in seen["env"].items())
 

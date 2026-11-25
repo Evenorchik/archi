@@ -265,6 +265,8 @@ def launch(kind: str, *, home: str | os.PathLike | None = None, conversation: st
         raise JobError("there is no command to run")
     if kind in ("agent", "workflow") and not (prompt or "").strip():
         raise JobError("there is no task for the agent")
+    if cwd and not Path(cwd).is_dir():
+        raise JobError(f"the working directory does not exist: {cwd}")
     cfg = Config(home)
     if kind == "workflow":
         provider = "claude"
