@@ -1,0 +1,16 @@
+# runtime state of an installed agent: never part of the repo
+/config/
+/data/
+/logs/
+/memory/
+/knowledge/
+/sessions/
+/state/
+/.inbox/
+/.scratch/
+*.env
+.env
+*.pid
+.venv/
+__pycache__/
+*.pyc
