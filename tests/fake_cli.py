@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """Stand-in for the `claude` and `codex` CLIs in tests. Behaviour comes from FAKE_MODE; FAKE_FLAVOR is
-"claude" or "codex". Everything it receives is echoed back so tests can assert on it."""
+"claude" or "codex". Everything it receives is echoed back so tests can assert on it.
+
+Directives in the prompt drive a single claude turn (for live door tests): `fake:slow` (FAKE_SLOW_STEPS steps,
+FAKE_STEP_S apart), `fake:hang` (never answers), `fake:file=/abs/path` (the answer sends that file),
+`fake:voice` (the answer asks for a voice note)."""
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -36,6 +41,8 @@ if mode == "fail":
     sys.stderr.write("boom: something broke\n")
     sys.exit(2)
 
+directives = dict(re.findall(r"fake:(\w+)(?:=([^\s\\\"]+))?", stdin))
+
 if flavor == "claude":
     resume = argv[argv.index("--resume") + 1] if "--resume" in argv else None
     if mode == "stale" and resume:
@@ -50,6 +57,18 @@ if flavor == "claude":
         {"type": "tool_use", "id": "t3", "name": "ToolSearch", "input": {}},
     ]}, "session_id": sid})
     out({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "a\nb"}]}})
+    if "slow" in directives:
+        for i in range(int(os.environ.get("FAKE_SLOW_STEPS", "6"))):
+            time.sleep(float(os.environ.get("FAKE_STEP_S", "1.5")))
+            out({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": f"s{i}", "name": "Bash",
+                                                               "input": {"command": "true",
+                                                                         "description": f"Slow step {i + 1}"}}]},
+                 "session_id": sid})
+    if "hang" in directives:
+        child = subprocess.Popen(["sleep", "900"])
+        with open(os.environ.get("FAKE_PIDFILE", "/dev/null"), "w") as fh:
+            fh.write(f"{os.getpid()} {child.pid}")
+        time.sleep(900)
     out({"type": "stream_event", "event": {"type": "message_start"}})
     for piece in ("Hel", "lo"):
         out({"type": "stream_event", "event": {"type": "content_block_delta",
@@ -59,6 +78,10 @@ if flavor == "claude":
              "result": "API Error: overloaded", "session_id": sid})
         sys.exit(1)
     answer = "ANSWER stdin=" + json.dumps(stdin[-300:])
+    if directives.get("file"):
+        answer += f"\n[FILE {directives['file']}]"
+    if "voice" in directives:
+        answer += '\n[VOICE lang="en"]Hello from the fake agent[/VOICE]'
     out({"type": "assistant", "message": {"content": [{"type": "text", "text": answer}]}, "session_id": sid})
     # one very long line: the reader must not choke on lines over 64 KB
     out({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t9",

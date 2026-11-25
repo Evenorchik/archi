@@ -1,10 +1,10 @@
 """Matrix client-server API access: the door's async client, a stdlib client, homeserver discovery.
 
 * `MxApi` (async, used by the door) wraps matrix-nio's AsyncClient WITHOUT end-to-end encryption. Sends,
-  redactions, typing, joins, leaves, uploads and downloads go through nio; /sync is long-polled through nio's
-  HTTP session but parsed here as plain JSON, so the door handles the event JSON the spec documents and one
-  event nio cannot parse never wedges the sync loop (nor do room ids of room version 12, which have no
-  server part).
+  redactions, typing, uploads and downloads go through nio's typed calls; /sync, joins and leaves go through
+  nio's HTTP session as plain JSON requests: the door handles the event JSON the spec documents, one event nio
+  cannot parse never wedges the sync loop, room ids of room version 12 (no server part) work, and joins carry
+  the JSON body strict servers require.
 * `SyncApi` (stdlib only) is what the `archi` CLI, `archi setup matrix` and doors.matrix.notify use: they
   must work without the venv.
 * `resolve_homeserver()` turns what the owner typed into the client-API base URL, following the
@@ -244,28 +244,35 @@ class MxApi:
         r = self._check(await self.client.whoami(), "whoami")
         return {"user_id": r.user_id, "device_id": r.device_id}
 
-    async def sync(self, since: str | None, timeout_ms: int, sync_filter: dict | None = None) -> dict:
-        """One /sync, as the plain JSON the server sent."""
-        from nio import Api
+    async def _raw(self, method: str, path: str, body: dict | None = None, timeout: float | None = None) -> dict:
+        """One request through nio's HTTP session, answered as plain JSON (MxError when it is not a 200)."""
         if self.client.client_session is None:      # nio creates its HTTP session on the first typed call
             await self.whoami()
-        method, path = Api.sync(self.client.access_token, since=since, timeout=timeout_ms or None,
-                                filter=sync_filter)
-        resp = await self.client.send(method, path, timeout=timeout_ms / 1000 + 30)
+        data = json.dumps(body) if body is not None else None
+        resp = await self.client.send(method, path, data=data,
+                                      headers={"Content-Type": "application/json"} if data is not None else None,
+                                      timeout=timeout)
         try:
             raw = await resp.text()
         finally:
             resp.release()
         try:
-            body = json.loads(raw or "{}")
+            out = json.loads(raw or "{}")
         except ValueError:
-            body = {}
-        if not isinstance(body, dict):
-            body = {}
+            out = {}
+        if not isinstance(out, dict):
+            out = {}
         if resp.status != 200:
-            raise MxError(str(body.get("errcode") or f"HTTP_{resp.status}"), str(body.get("error") or raw[:200]),
-                          resp.status, body.get("retry_after_ms"))
-        return body
+            raise MxError(str(out.get("errcode") or f"HTTP_{resp.status}"), str(out.get("error") or raw[:200]),
+                          resp.status, out.get("retry_after_ms"))
+        return out
+
+    async def sync(self, since: str | None, timeout_ms: int, sync_filter: dict | None = None) -> dict:
+        """One /sync, as the plain JSON the server sent."""
+        from nio import Api
+        method, path = Api.sync(self.client.access_token, since=since, timeout=timeout_ms or None,
+                                filter=sync_filter)
+        return await self._raw(method, path, timeout=timeout_ms / 1000 + 30)
 
     async def send(self, room_id: str, event_type: str, content: dict) -> str:
         r = self._check(await self.client.room_send(room_id, event_type, content, tx_id=txn_id()), "send")
@@ -279,11 +286,16 @@ class MxApi:
         self._check(await self.client.room_typing(room_id, typing_state=on, timeout=timeout_ms), "typing")
 
     async def join(self, room_id: str) -> str:
-        r = self._check(await self.client.join(room_id), "join")
-        return r.room_id
+        # nio's join() and room_leave() send no request body; the spec's body is a JSON object and stricter
+        # servers (continuwuity) refuse an empty one with M_BAD_JSON, so they go out with {} here.
+        from nio import Api
+        method, path = Api.join(self.client.access_token, room_id)
+        return str((await self._raw(method, path, {})).get("room_id") or room_id)
 
     async def leave(self, room_id: str) -> None:
-        self._check(await self.client.room_leave(room_id), "leave")
+        from nio import Api
+        method, path = Api.room_leave(self.client.access_token, room_id)
+        await self._raw(method, path, {})
 
     async def upload(self, data: bytes, content_type: str, filename: str) -> str:
         resp, _keys = await self.client.upload(lambda *_: data, content_type=content_type, filename=filename,

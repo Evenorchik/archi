@@ -385,6 +385,8 @@ class Door(BaseDoor):
         if room_id in self._encrypted_done:
             return
         self._encrypted_done.add(room_id)
+        known = self.registry.get(make_key("mx", room_id))
+        name = name or (known.title if known else "") or self.registry.chat(room_id).get("name", "")
         self.log("WARNING: room", room_id, repr(name), "is end-to-end encrypted; this door cannot read it, leaving")
         self.registry.update_chat(room_id, door="mx", encrypted=True, name=name, membership="leave",
                                   left_reason="encrypted")

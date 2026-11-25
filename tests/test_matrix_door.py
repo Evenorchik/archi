@@ -235,7 +235,7 @@ def test_encryption_switched_on_in_a_room(tmp_path):
     run_sync(door, joined(ROOM, ev("m.room.encryption", {"algorithm": "m.megolm.v1.aes-sha2"}, state_key=""),
                           ev("m.room.encrypted", {"algorithm": "m.megolm.v1.aes-sha2", "ciphertext": "x"})))
     assert api.left == [ROOM] and ENCRYPTED_NOTICE in api.texts(ROOM)
-    assert door.registry.get(KEY).state == "deleted"
+    assert door.registry.get(KEY).state == "deleted" and door.registry.chat(ROOM)["name"] == "Work"
     archived = [json.loads(x) for x in (tmp_path / "state" / "archive.jsonl").read_text().splitlines()]
     assert archived[-1]["key"] == KEY and archived[-1]["reason"] == "encrypted"
     assert len(runner.calls) == 1
