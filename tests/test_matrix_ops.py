@@ -227,6 +227,37 @@ def test_setup_with_a_token_and_bad_answers(tmp_path, hs, units, monkeypatch):
         setup.step_matrix(cfg, ni=True)
 
 
+def test_interactive_setup_retries_the_password_and_keeps_a_sign_in(tmp_path, hs, units, monkeypatch, capsys):
+    asked, secret_prompts = [], []
+    answers = iter([hs.url, "archi", "archi", OWNER])
+    secrets_ = iter(["wrong", PASSWORD])
+
+    def ask(prompt, default=""):
+        asked.append(prompt)
+        return next(answers)
+
+    def ask_secret(prompt, **kw):
+        secret_prompts.append(prompt)
+        return next(secrets_)
+
+    monkeypatch.setattr(setup.term, "ask", ask)
+    monkeypatch.setattr(setup, "ask_secret", ask_secret)
+    cfg = Config(tmp_path)
+    setup.step_matrix(cfg, ni=False)
+    assert cfg.get("MATRIX_ACCESS_TOKEN") == TOKEN and cfg.get("MATRIX_OWNER_ID") == OWNER
+    assert "Sign-in failed" in capsys.readouterr().out and len(secret_prompts) == 2
+    assert "never stored" in secret_prompts[0] and PASSWORD not in cfg.path.read_text()
+
+    # a re-run keeps the sign-in (no password asked) and offers the stored owner as the default
+    answers = iter([hs.url, ""])
+    monkeypatch.setattr(setup.term, "ask", lambda prompt, default="": next(answers) or default)
+    monkeypatch.setattr(setup.term, "ask_yes", lambda prompt, default=True: True)
+    monkeypatch.setattr(setup, "ask_secret", lambda *a, **k: pytest.fail("the password was asked again"))
+    logins = len(hs.calls("/login"))
+    setup.step_matrix(cfg, ni=False)
+    assert len(hs.calls("/login")) == logins and cfg.get("MATRIX_OWNER_ID") == OWNER
+
+
 # ------------------------------------------------------------------ archi mx
 def mx(argv, env=None):
     ap = argparse.ArgumentParser()

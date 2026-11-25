@@ -532,8 +532,9 @@ def step_matrix(cfg: Config, ni: bool) -> None:
     if ni:
         owner = os.environ.get("ARCHI_MATRIX_OWNER", "").strip() or owner_now
     else:
-        owner = term.ask(f"  Your own Matrix id, the owner the bot answers{f' [{owner_now}]' if owner_now else ''}"
-                         " (e.g. @you:matrix.org): ", owner_now).strip()
+        shown = f" [{owner_now}]" if owner_now else ""
+        owner = term.ask(f"  Your own Matrix id, the owner the bot answers{shown} (e.g. @you:matrix.org): ",
+                         owner_now).strip()
     if not is_mxid(owner):
         raise SetupError(f"the owner {owner!r} is not a Matrix user id (@name:server)")
     if owner == bot:
