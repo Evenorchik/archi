@@ -7,7 +7,8 @@ coding-agent CLI (Claude Code or OpenAI Codex) with your subscription, and answe
 chat with your bot or in a group, with one independent conversation per topic. It has full access to its server,
 so it can install things, run services, write and fix code, and maintain itself.
 
-> Status: v0.1 in development. This README describes the target of the first release.
+> Status: v0.1, the first public version. The installer is tested on fresh Ubuntu 22.04, Ubuntu 24.04 and
+> Debian 12; Claude Code is tested end to end, Codex up to its sign-in. Issues and fixes are welcome.
 
 ## What you get
 - **Telegram as the main door.** Private chat with topics, or a group with topics: every topic is its own
