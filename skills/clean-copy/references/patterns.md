@@ -11,7 +11,7 @@ Why: the em dash is the most frequent punctuation habit of generated text in bot
 - "The update — finally — fixes sync." / «Обновление — наконец-то — чинит синхронизацию.»
 - spaced en dash between words: "fast – and cheap"; ASCII stand-in: "fast -- and cheap"
 
-Fix: a light pause is a comma, a hard break is a period, an aside goes in parentheses; otherwise rebuild the sentence. Don't swap every dash for a colon.
+Fix: read the sentence without the dash. One thought: a comma or nothing. Two thoughts: two sentences. A detour: parentheses, or cut it. Don't swap every dash for a colon.
 
 Not a hit: hyphens in compounds (follow-up, кто-то), number ranges (10–20, 1941—1945 is SOFT only), a dash used as a list bullet (SOFT).
 
@@ -31,10 +31,10 @@ Linter: `quote.emphasis` H (one to five words, starting with a lowercase letter,
 
 Why: the sentence warms up instead of saying something. Genre templates from feed posts, SEO pages and school essays.
 
-- Drumroll: "Here's the thing:", "Here's why…", "The truth is…", "Let's be honest", "Let me be clear", "Can we talk about…"
+- Drumroll: "Here's the thing:", "Here's the deal:", "Truth be told,", "Let's face it,", "The reality is,", "Let me be blunt"
 - Hook: "Picture this", "What if I told you…", "Ever wondered…", "We've all been there", "It's no secret that…"
 - Scene-setting: "In today's fast-paced world", "In an era of…", "In the ever-evolving landscape of…"
-- RU: «Если честно,», «Честно говоря,», «Скажу прямо:», «Вот в чём дело:», «Давайте разберёмся», «Давайте начистоту», «Не буду ходить вокруг да около», «Ни для кого не секрет, что», «В современном мире», «В эпоху цифровых технологий», «Задумывались ли вы когда-нибудь…»
+- RU: «Если честно,», «Честно говоря,», «Буду откровенен:», «Вот в чём дело:», «Давайте разберёмся», «Давайте начистоту», «Не буду ходить вокруг да около», «Ни для кого не секрет, что», «В современном мире», «В эпоху цифровых технологий», «Задумывались ли вы когда-нибудь…»
 
 Softer (SOFT): "Honestly,", "It turns out", "So,", "Look,", "To my surprise", «На самом деле,», «Дело в том, что», «Итак,», «Представьте себе».
 
@@ -104,8 +104,8 @@ Linter: `rhythm.triplets` S (several "A, B and C" lists), `rhythm.parallel` S.
 Why: every post ends with a ritual invitation to comment; across several posts it becomes a signature.
 
 - "What do you think?", "Thoughts?", "Agree?", "I'd love to hear how you…", "I'm curious what others…", "Let me know in the comments", "Share your experience below", "Am I the only one?", "Follow for more", "Tag someone who…", "If you found this useful…"
-- compound either/or closers: "Did the change hit you all at once or creep up over months? And did you mention it to your team, or keep it to yourself?"
-- RU: «А как у вас?», «Что думаете?», «Согласны?», «Пишите в комментариях», «Делитесь опытом», «Мне интересно, как у других», «Буду рад услышать ваше мнение», «Ставьте лайк», «Подписывайтесь», «Сохраняйте, чтобы не потерять»
+- compound either/or closers: "Do you plan your week on Sunday night or on Monday morning? And on paper or in an app?"
+- RU: «А как у вас?», «Что думаете?», «Согласны?», «Пишите в комментариях», «Делитесь опытом», «Интересно, как это устроено у вас», «Буду рад услышать ваше мнение», «Ставьте лайк», «Подписывайтесь», «Сохраняйте, чтобы не потерять»
 
 Fix: end on the last real point, or on what you still don't know. If you need answers, ask one question that only these readers can answer, inside the text rather than as a ritual at the end. In a batch, at most a third of the texts end on a question.
 
@@ -153,7 +153,7 @@ Why: the probable word for "important" is always the biggest one. A few words ar
 - SOFT: seamless, robust, cutting-edge, world-class, holistic, pivotal, myriad, meticulous, underscore, showcase, foster, leverage, empower, transformative, groundbreaking, journey, landscape, vibrant, crucial, "thrilled to announce"
 - RU HARD: «погрузиться в мир/атмосферу», «окунуться в атмосферу», «раскрыть потенциал», «на новый уровень», «откройте для себя», «трудно переоценить»
 - RU SOFT: «уникальный», «инновационный», «неотъемлемая часть», «играет ключевую роль», «в самом сердце», «широкий спектр», «незабываемые впечатления», «идеальное решение», «ключевой», «важнейший»
-- filler that announces importance: "It's important to note", "It's worth noting", "When it comes to", "At its core", «Важно отметить», «Стоит отметить», «Когда речь идёт о», «На сегодняшний день», «По сути»
+- filler that announces importance: "It's important to note", "Needless to say", "First and foremost", "Last but not least", «Важно отметить», «На сегодняшний день», «Как известно», «Как ни крути»
 
 Fix: say what actually happens, in the word you would use out loud. "Unlock the potential of your data" is "see which customers order twice".
 
@@ -163,19 +163,19 @@ Linter: `inflated.core` H, `inflated.ru-core` H, `filler.importance` H, `filler.
 
 Why: phrases that spread through feeds and model outputs in recent years and now mark text as templated.
 
-- quietly revolutionizing, the quiet power of, load-bearing (figurative), doing the heavy lifting, the honest answer, a masterclass in, lives rent-free
-- RU: «тихая революция», «тихо меняет», «честный ответ», «это база», «мастхэв»
+- quietly revolutionizing, the quiet revolution of, load-bearing (figurative), doing the heavy lifting, a masterclass in, lives rent-free, it's giving
+- RU: «тихая революция», «тихо меняет», «это база», «мастхэв», «вау-эффект», «без воды»
 
 Fix: drop the ornament, state the claim.
 
 Linter: `trend.en` S, `trend.ru` S.
 
-## 15. Vague declaratives, telling instead of showing
+## 15. Vague declaratives
 
-Why: the sentence says that something is big, deep or important and stops there.
+Why: the sentence says that something is big or important and stops there.
 
-- "The implications are significant.", "The stakes are high.", "This is bigger than it seems.", "This is what leadership actually looks like.", "This really matters."
-- RU: «Последствия серьёзные.», «Ставки высоки.», «Всё не так просто, как кажется.», «Вот как выглядит настоящее лидерство.», «Почему это важно?»
+- "The possibilities are endless.", "The impact will be enormous.", "This is bigger than it looks.", "This changes the game.", "The future is here.", "More than ever."
+- RU: «Возможности безграничны.», «Потенциал огромен.», «Будущее уже наступило.», «Это меняет правила игры.», «Всё не так просто, как кажется.», «Почему это важно?»
 
 Fix: name the consequence ("If the API changes, every integration breaks on the same day") or cut the sentence.
 
@@ -188,7 +188,7 @@ Why: in a personal post, analyst terms read as an imitation of an analyst. Fine 
 - HARD: n=1, sample size of one, anecdata, «выборка из одного человека»
 - SOFT: statistically significant, confirmation bias, control group, methodology, data points, empirically, paradigm, cognitive load; «статистически значимо», «контрольная группа», «методология», «когнитивное искажение», «парадигма», «корреляция», «репрезентативный»
 
-Fix: "just my experience", "I didn't compare it with anything", "might be reading too much into it", «у меня так», «ни с чем не сравнивал».
+Fix: "that's just how it went for me", "I only tried it on myself", "could be a coincidence", «проверял только на себе», «может, совпадение».
 
 Linter: `academic.posture` H, `academic.terms` S, `academic.ru-terms` S.
 
@@ -197,7 +197,7 @@ Linter: `academic.posture` H, `academic.terms` S, `academic.ru-terms` S.
 Why: corporate phrases stand in for the action they describe.
 
 - circle back, touch base, move the needle, low-hanging fruit, deep dive, double down, lean into, synergy, bandwidth, actionable insights, pain points, learnings, going forward, on the same page, level up
-- RU: «синергия», «прокачать», «драйвить», «закрыть вопрос», «новые вызовы», «точки роста», «боли клиента», «в моменте», «инсайты», «фидбек», «зона комфорта», «лучшие практики»
+- RU: «синергия», «прокачать», «драйвить», «закрыть потребность», «новые вызовы», «точки роста», «боли клиента», «в разрезе», «по итогу», «инсайты», «фидбек», «зона комфорта», «лучшие практики»
 
 Fix: the plain action: "call you on Friday", "fix the signup form", «созвонимся в пятницу».
 
@@ -216,9 +216,9 @@ Linter: `officialese.ru` S, `calque.ru` S.
 
 ## 19. Copula dodges
 
-Why: "is" and "has" feel too plain, so the text "serves as", "stands as", "boasts".
+Why: a bare "is" or "has" looks too plain to a model, so a menu "acts as a gateway" and a phone "boasts a camera".
 
-- serves as, stands as, functions as, boasts, represents a significant…; RU: «является», «представляет собой», «служит в качестве»
+- serves as a…, acts as a catalyst, stands as, boasts a…, represents a significant step; RU: «является», «представляет собой», «служит в качестве», «выступает в роли»
 
 Fix: is, has; «это», «есть», or no verb at all («Офис на Лесной, 8»).
 
@@ -228,10 +228,10 @@ Linter: `copula.dodge` S, `officialese.ru` S.
 
 Why: the sentence is finished, then a participle clause explains why it matters.
 
-- "We added reminders, ensuring a seamless experience." / "The team grew to 40, highlighting our commitment to quality."
-- RU: «Мы добавили напоминания, обеспечивая бесшовный опыт.», «…, подчёркивая важность…», «…, что делает его незаменимым»
+- "The bakery now opens at 7, reflecting our commitment to early risers." / "The team grew to forty people, paving the way for faster releases."
+- RU: «Мы расширили зал до сорока мест, открывая новые возможности для гостей.», «…, что делает работу комфортнее», «…, тем самым укрепляя доверие»
 
-Fix: cut the tail. If it carried a real thought, give that thought its own sentence with a concrete consequence ("Reminders go out at 9 if a dose is not logged").
+Fix: cut the tail. If it hid a real point, give the point its own sentence with something checkable in it ("We open at 7 now. [Who asked for it, or what it changes.]").
 
 Linter: `tail.en` S, `tail.ru` S. Many participle clauses are legitimate, so these stay SOFT.
 
@@ -243,7 +243,7 @@ Why: trained to avoid being wrong, generated text stacks qualifiers until nothin
 - voiceless: "some might argue", "arguably", "it could be argued"; RU: «кто-то скажет», «можно поспорить», «не исключено, что»
 - piles: perhaps, somewhat, relatively, in some ways, to some extent, kind of; RU: «в какой-то мере», «в некотором смысле», «отчасти», «достаточно», «довольно»
 
-Fix: commit. Keep one hedge where the doubt is real and say what is unknown ("we don't know yet whether it holds after the second month").
+Fix: commit. Keep one hedge where the doubt is real and say what is unknown ("we haven't tested it on Windows yet").
 
 Linter: `hedge.double` H, `hedge.ru-double` H, `hedge.voiceless` S, `hedge.ru-voiceless` S, `hedges.en` S, `hedges.ru` S (three or more in one paragraph).
 
@@ -276,9 +276,9 @@ Linter: `absolutes.en` S, `absolutes.ru` S (three or more in one paragraph).
 
 ## 25. Emphasis crutches, permission slips, fake intimacy
 
-- crutches: "Let that sink in.", "Read that again.", "Make no mistake.", "This changes everything.", "Full stop.", "Period."; RU: «Вдумайтесь.», «Перечитайте ещё раз.», «Это меняет всё.», «Точка.»
+- crutches: "Let that sink in.", "Read that twice.", "This changes everything.", "Say it louder.", "Full stop.", "I'll wait."; RU: «Вдумайтесь.», «Перечитайте ещё раз.», «Это меняет всё.», «Точка.»
 - permission slips: "And that's okay.", «И это нормально.»
-- intimacy: "Trust me", "Between you and me", "Real talk", "I promise", "You're not alone", "You've got this"; RU: «Поверьте», «Между нами», «Открою секрет», «Буду с вами откровенен», «Вы не одни»
+- intimacy: "Trust me", "Between you and me", "Real talk", "You're not alone", "You've got this"; RU: «Поверьте», «Между нами», «Открою секрет», «Положа руку на сердце», «Вы не одни»
 
 Fix: cut. If the point needs a crutch, sharpen the point.
 
@@ -290,26 +290,26 @@ Why: the text summarizes what the reader has just read, or ends each paragraph w
 
 - "In conclusion", "To sum up", "In summary"; SOFT: "Ultimately", "All in all", "The bottom line", "Key takeaways", "Long story short"
 - RU: «В заключение», «Подводя итог», «Подытожим», «Резюмируя»; SOFT: «В итоге», «Таким образом», «В сухом остатке», «Одним словом»
-- morals: "By doing X, you'll Y.", "That's what it's all about.", «Делая X, вы получаете Y.»
+- morals: "That's the real lesson here.", "And that's what it's all about.", «Вот и весь секрет.», «В этом и есть смысл.»
 
 Fix: end on the last new point or on the ask.
 
 Linter: `recap.marker` H, `recap.ru-marker` H, `recap.soft` S, `recap.ru-soft` S, `recap.paragraph` S (a closing paragraph whose words mostly appeared above, with no new numbers).
 
-## 27. False agency, hidden actors, narrator at a distance
+## 27. Hidden actors and lecturing from above
 
-Why: abstractions do people's work, so nobody is responsible and nothing is concrete.
+Why: abstractions and passives do people's work, so nobody is responsible and nothing is concrete. A related habit generalizes about "people" where the text could speak to the reader's own case.
 
-- "The data tells us…", "The market rewards…", "The decision emerged", "Mistakes were made", "People tend to…", "Nobody designed this."
-- RU: «Данные говорят…», «Рынок решает…», «Решение пришло само», «Было решено…», «Считается, что…», «Люди склонны…»
+- "The numbers speak for themselves.", "A decision was made to…", "Mistakes were made.", "Users are encouraged to…", "Growth followed."; generalizing: "Many of us struggle with…", "Society tells us…"
+- RU: «Цифры говорят сами за себя.», «Было принято решение…», «Наблюдается рост…», «Пользователям рекомендуется…», «Рост не заставил себя ждать.»; «Многие из нас…», «Общество диктует…»
 
-Fix: name who did it ("We read the March numbers and decided…"); "you" beats "people". Keep the passive where the actor is unknown or irrelevant.
+Fix: name who did it ("We looked at the March orders and moved delivery to Tuesdays"), and talk about the case in front of you rather than about people in general. Keep the passive where the actor is unknown or irrelevant.
 
 Linter: `agency.en` S, `agency.ru` S, `passive.en` S (three or more passives in one paragraph).
 
 ## 28. One thing, many names
 
-Why: a repetition penalty makes the text rotate names: the app, the platform, the tool, the solution. The reader wonders whether these are four things.
+Why: a repetition penalty makes the text rotate names: the bakery, the shop, the business, the brand. The reader wonders whether these are four things.
 
 Fix: pick one name and repeat it.
 
@@ -317,9 +317,9 @@ Linter: `names.cycling` S (four or more of app/platform/tool/solution/service/pr
 
 ## 29. "X by X"
 
-Why: "step by step", "week by week", «шаг за шагом» promise a walkthrough that usually never comes.
+Why: "step by step", "day by day", «шаг за шагом» advertise granularity. Check whether the text delivers it.
 
-Fix: keep it only if the text really goes through each step; otherwise name what the reader gets ("what changes in each of the three phases").
+Fix: keep it only if the text really goes through each step; otherwise say what the reader gets ("the four settings to change, in order").
 
 Not a hit: one by one, side by side, little by little.
 

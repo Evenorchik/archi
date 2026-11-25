@@ -4,8 +4,8 @@ Go through every pass in order. A hit means a fix, not "probably fine". Linter r
 
 ## Pass 0. Meaning first
 
-- [ ] I wrote down the one to three things the text claims, asks or tells, who reads it, and where.
-- [ ] Paragraphs with more than three hits get rewritten from those notes, not patched.
+- [ ] The scratch note is done: what the reader should know afterwards, what they are asked to do, who they are and where they read it.
+- [ ] Paragraphs with more than three hits get rebuilt from the note, not patched.
 - [ ] Each cluster of hits has a named cause from the table in SKILL.md.
 
 ## Pass 1. Punctuation and words
@@ -16,8 +16,8 @@ Go through every pass in order. A hit means a fix, not "probably fine". Linter r
 - [ ] Announcements and meta-commentary `[signpost.*]` → cut; the next sentence is the start.
 - [ ] Emphasis crutches and permission slips `[crutch.*]`: "Let that sink in", "Read that again", "And that's okay", «Вдумайтесь», «И это нормально» → cut.
 - [ ] Inflated vocabulary and hype verbs `[inflated.*]`: delve, tapestry, unlock potential, game-changer, «погрузиться в мир», «раскрыть потенциал», «на новый уровень» → plain words.
-- [ ] Fashionable decorations `[trend.*]`: quietly, load-bearing, doing the heavy lifting, the honest answer, «тихая революция» → drop the ornament, state the claim.
-- [ ] Vague declaratives and telling instead of showing `[vague.*]`: "the stakes are high", "this is what X actually looks like", «последствия серьёзные» → name the consequence or cut.
+- [ ] Fashionable decorations `[trend.*]`: quietly, load-bearing, doing the heavy lifting, a masterclass in, «тихая революция», «это база» → drop the ornament, state the claim.
+- [ ] Vague declaratives and telling instead of showing `[vague.*]`: "the possibilities are endless", "this changes the game", «будущее уже наступило» → name the consequence or cut.
 - [ ] Business jargon `[jargon.*]` → the plain action.
 - [ ] Research vocabulary in a casual text `[academic.*]` → everyday words.
 - [ ] Russian officialese and calques `[officialese.ru, calque.ru]` → plain verbs, «это», «есть».
@@ -32,18 +32,18 @@ Go through every pass in order. A hit means a fix, not "probably fine". Linter r
 
 ## Pass 2. Sentence and paragraph structure
 
-- [ ] Staged reversals `[contrast.*]`: "It's not X. It's Y.", "X isn't the problem. Y is.", «Это не X, это Y», «Дело не в X, а в Y» → say Y.
-- [ ] Negative build-up `[contrast.negative-buildup]`: "Not X. Not Y. Z." → say Z.
-- [ ] Fragment runs and staccato `[fragment.*]`: "Speed. Price. Service." → one sentence that says how they relate.
+- [ ] Staged reversals `[contrast.*]`: "It's not X. It's Y.", "X isn't the problem. Y is.", «Это не X, это Y», «Дело не в X, а в Y» → keep only the positive claim.
+- [ ] Negative build-up `[contrast.negative-buildup]`: "Not X. Not Y. Z." → lead with Z.
+- [ ] Fragment runs and staccato `[fragment.*]`: "Bold. Local. Honest." → one sentence that says how they relate.
 - [ ] Staged reveals `[reveal.*]`: "The result? …", «Итог? …», "Why? Because…" → state it. At most one "Label: reveal" colon per text.
 - [ ] Rhetorical hooks `[opener.hook, opener.wondered]`: "What if I told you", "Picture this", «Задумывались ли вы» → say it.
 - [ ] Audience call-outs `[audience.*]` → fold the reader into the sentence (relaxed in ad mode).
 - [ ] Outsider disclosure in the first lines `[outsider.*]` → move it to paragraph two or three.
-- [ ] False agency and hidden actors `[agency.*, passive.en]`: "the data tells us", "the market rewards", «было решено» → name who did it.
-- [ ] Narrator at a distance: "People tend to…", "Nobody designed this", "This happens because…" → put the reader in the scene; "you" beats "people".
+- [ ] False agency and hidden actors `[agency.*, passive.en]`: "the numbers speak for themselves", "a decision was made", «было принято решение» → name who did it.
+- [ ] Lecturing from above: claims about "people", "society" or "many of us" where the text could speak to the reader's own case («Многие из нас…», «Общество диктует…») → talk about the case in front of you.
 - [ ] One thing under several names `[names.cycling]` → one name, repeated.
-- [ ] A moral or recap at the end of a paragraph or of the text `[recap.*]`: "Ultimately…", "By doing X you'll Y", «В итоге…» → end on the last fact or the ask.
-- [ ] "What makes X special is…" wind-ups `[cleft.en]` → lead with the subject.
+- [ ] A moral or recap at the end of a paragraph or of the text `[recap.*]`: "Ultimately…", "That's the real lesson here", «Вот и весь секрет» → end on the last fact or the ask.
+- [ ] "What makes X special is…" wind-ups `[cleft.en]` → start with the thing itself.
 - [ ] "X by X" promises `[xbyx.*]` → keep only if the text walks through each one.
 - [ ] Template closers and engagement bait `[closer.*]`, stacked either/or questions at the end `[closer.stacked]` → end on a statement, or one specific question.
 
@@ -68,12 +68,12 @@ Go through every pass in order. A hit means a fix, not "probably fine". Linter r
 
 ## Pass 5. Overcorrection and invention
 
-- [ ] A relative took the place of a removed pattern (dash → colon, "not X but Y" → "X? No. Y.", delve → dig into)? Rewrite the whole sentence.
+- [ ] A sibling took the place of a removed pattern (dash → semicolon or colon, "Here's the thing" → "The thing is", one hype verb → its synonym)? Rebuild the whole sentence.
 - [ ] More than one "Label: reveal" colon?
 - [ ] Chopped into fragments or one-line paragraphs?
-- [ ] A real caveat cut? Put it back in one sentence.
-- [ ] Compare with the source sentence by sentence: a number, story, quote, feature, reason or any other fact that was not there? Remove it or turn it into a `[placeholder]`.
-- [ ] Every fact, number, name, link, date, price and required disclaimer of the source is still there.
+- [ ] Did a genuine uncertainty disappear? Restore it, stated precisely.
+- [ ] Put source and result side by side and trace every factual statement of the result back to the source. Anything that does not trace (a figure, an anecdote, a quote, a capability, a motive) goes, or becomes a `[gap]`.
+- [ ] Trace the other way too: every figure, name, link, date, price and mandatory disclaimer of the source appears in the result.
 - [ ] The author's voice and register are still there.
 
 ## Pass 6. Score and relint

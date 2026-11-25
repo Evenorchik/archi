@@ -68,13 +68,13 @@ The question leads; the disclosure moves to the second paragraph, where it expla
 
 ---
 
-## 6. Personal tracking post: research vocabulary, stacked hedges (EN)
+## 6. Baking post: research vocabulary, stacked hedges (EN)
 
 **Before**
-> Sample size of one, so this could potentially be confirmation bias, but it seems that switching to a standing desk may possibly have reduced my back pain somewhat over the last two months.
+> Anecdotally, and with a sample size of one, the data points suggest that a longer cold proof may potentially yield a more open crumb, although I acknowledge there was no control group.
 
 **After**
-> Two months after switching to a standing desk, my back hurts less. That's just me, so it could be something else.
+> I've only tried it on my own bread, but a longer proof in the fridge gave me a more open crumb. I didn't bake a comparison batch, so it could be chance.
 
 ---
 
@@ -86,7 +86,7 @@ The question leads; the disclosure moves to the second paragraph, where it expla
 **Over-corrected**
 > Meetup moved. Thursday now. Hall double-booked. Same time. Same room. Pizza confirmed.
 
-The original was fine. The "fix" is a fragment run, which is a machine signature of its own. Leave living text alone.
+The original was fine. The "fix" is a fragment run, which is a machine signature of its own. If a text already sounds like a person, leave it alone.
 
 ---
 

@@ -112,8 +112,7 @@ rule("opener.preview", SOFT, "en", "sentence", r"here" + AP + r"?s how\b",
      "preview opener", "fine before real instructions; otherwise start with step one")
 rule("opener.truth", HARD, "en", "sentence",
      r"(?:the (?:simple |hard |uncomfortable |honest |brutal |plain |real |sad )?truth is|the reality is"
-     r"|truth be told|let me be (?:clear|honest|frank|blunt)|let" + AP + r"s (?:be (?:honest|real|clear|frank)|face it)"
-     r"|can we talk about)\b",
+     r"|truth be told|let me be (?:clear|honest|frank|blunt)|let" + AP + r"s (?:be (?:honest|real|clear|frank)|face it))\b",
      "throat-clearing opener", "state the claim itself")
 rule("opener.sincerity", SOFT, "en", "sentence",
      r"(?:honestly|frankly|to be (?:honest|fair|frank)|i" + AP + r"ll be honest|i have to (?:say|admit)"
@@ -347,7 +346,6 @@ rule("outsider.open", HARD, "en", "opening",
      r"(?:i" + AP + r"?m (?:not (?:a|an|really a|much of a)|no) [\w-]+(?: [\w-]+)?,? but\b"
      r"|i" + AP + r"?m not (?:an expert|a professional|a specialist|an insider)\b"
      r"|as (?:an outsider|someone (?:outside|who isn" + AP + r"t|who" + AP + r"s not|with no|from outside))\b"
-     r"|i" + AP + r"?m (?:posting|writing|coming at this) (?:this )?(?:from|as an) outsider?\b"
      r"|i don" + AP + r"t usually post (?:here|on|about)\b"
      r"|i know (?:nothing|very little|next to nothing) about [^.!?\n]{1,40}?,? but\b)",
      "opens with an outsider disclosure: readers leave before the point",
@@ -357,7 +355,7 @@ rule("outsider.ru-open", HARD, "ru", "opening",
      r"(?:я (?:вообще |сам |сама )?не (?:врач|юрист|психолог|эксперт|специалист|профессионал|программист|разработчик"
      r"|дизайнер|маркетолог|фотограф|инженер|медик|экономист|финансист|учитель|педагог|блогер|писатель|журналист"
      r"|айтишник|из (?:этой|вашей) (?:сферы|тусовки|области|темы|отрасли))\b"
-     r"|пишу (?:со стороны|как человек со стороны|как посторонн\w+)|как человек со стороны"
+     r"|как человек со стороны"
      r"|(?:я )?(?:тут|здесь) (?:человек )?(?:новый|новенький|новенькая),? но"
      r"|не претендую на (?:истину|экспертность|экспертизу)|я никогда не [\w-]+(?: [\w-]+)?,? но\b)",
      "opens with an outsider disclosure: readers leave before the point",
@@ -368,14 +366,14 @@ rule("outsider.ru-maybe", SOFT, "ru", "opening", r"я не [\w-]+,? но\b",
 # ---- academic vocabulary in casual text ------------------------------------
 rule("academic.posture", HARD, "any", "anywhere",
      r"\bn\s?=\s?1\b|\bsample (?:size )?of (?:one|1)\b|\banecdata\b|\bвыборк\w* (?:из )?(?:одного|1)\b",
-     "analyst posture in a personal text", "say 'in my case' / 'у меня', or drop it")
+     "analyst posture in a personal text", "say 'that is just how it went for me' / 'проверял только на себе', or drop it")
 rule("academic.terms", SOFT, "en", "anywhere",
      r"\bstatistically significant\b|\bconfirmation bias\b|\bcontrol group\b|\bp-value\b"
      r"|\bcorrelation (?:is not|isn" + AP + r"t|does not equal|doesn" + AP + r"t (?:equal|mean)) causation\b"
      r"|\bmethodology\b|\bself-reported\b|\bdata points?\b|\bempirical(?:ly)?\b|\bparadigm\b|\bfirst principles\b"
      r"|\bsurvivorship bias\b|\bcognitive (?:load|dissonance|bias(?:es)?)\b",
      "research vocabulary: right in a study, posture in a peer post",
-     "use everyday words: 'I didn't compare it to anything', 'might be reading too much into it'")
+     "use everyday words: 'I only tried it on myself', 'could be a coincidence'")
 rule("academic.ru-terms", SOFT, "ru", "anywhere",
      r"\bстатистически значим\w*|\bконтрольн\w* групп\w*|\bошибк\w* выжившего\b|\bпредвзятост\w* подтверждения\b"
      r"|\bкогнитивн\w* (?:искажени|диссонанс|нагрузк)\w*|\bметодологи\w*|\bэмпирическ\w*|\bпарадигм\w*"
@@ -414,7 +412,8 @@ rule("filler.phrase", SOFT, "en", "anywhere",
      r"|\blast but not least\b|\bas (?:we all|everyone|you all|you probably) know\b",
      "filler phrase", "cut it or say the specific thing")
 rule("copula.dodge", SOFT, "en", "anywhere",
-     r"\bserves as\b|\bstands as\b|\bfunctions as\b|\bboasts\b|\brepresents a (?:significant|major|new|real) \w+",
+     r"\bserves as (?:a|an|the)\b|\bacts as (?:a|an) (?:bridge|catalyst|hub|gateway|cornerstone)\b|\bstands as\b"
+     r"|\bboasts (?:a|an|over|more than|\d)|\brepresents (?:a|an) (?:significant|major|new|real|key) (?:step|milestone|shift|leap)\b",
      "dodges a plain 'is' or 'has'", "use 'is' or 'has'")
 rule("inflated.ru-core", HARD, "ru", "anywhere",
      r"\bпогру(?:зиться|зитесь|жаемся|зимся|жайтесь|зись) в (?:мир|атмосферу|удивительн\w*|увлекательн\w*|волшебн\w*)"
@@ -455,38 +454,35 @@ rule("calque.ru", SOFT, "ru", "anywhere",
 
 # ---- significance tails -------------------------------------------------------
 rule("tail.en", SOFT, "en", "anywhere",
-     r",\s+(?:highlighting|underscoring|emphasizing|showcasing|ensuring|reflecting|cementing|solidifying"
-     r"|demonstrating|signaling|signalling|marking|paving the way)\b|,\s+making (?:it|them|this) (?:a|an|the|more|easier|ideal|perfect)\b",
+     r",\s+(?:further |thereby )?(?:reinforcing|underscoring|reflecting|signal(?:l)?ing|setting the stage for|paving the way for"
+     r"|contributing to|fostering|enabling|allowing for|marking a|cementing|highlighting|showcasing|ensuring)\b"
+     r"|,\s+making (?:it|them|this) (?:a|an|the|more|easier|ideal|perfect)\b",
      "significance tail: the sentence ends, then explains why it matters", "cut the tail, or give the point its own sentence")
 rule("tail.ru", SOFT, "ru", "anywhere",
-     r",\s+(?:подч[её]ркивая|демонстрируя|обеспечивая|открывая|создавая|позволяя|делая)\b"
-     r"|,\s+что делает (?:его|е[её]|их|это|процесс)\b|,\s+тем самым\b",
+     r",\s+(?:тем самым |что )?(?:подч[её]ркивая|подч[её]ркивает|открывая|формируя|укрепляя|способствуя|позволяя|обеспечивая)\b"
+     r"|,\s+что делает (?:его|е[её]|их|это|процесс|работу)\b|,\s+тем самым\b",
      "significance tail: the sentence ends, then explains why it matters", "cut the tail, or give the point its own sentence")
-
 # ---- trendy decorations, vague declaratives, telling instead of showing -----
 rule("trend.en", SOFT, "en", "anywhere",
-     r"\bquietly (?:revolutioniz|transform|reshap|chang|becom|redefin)\w*|\bthe quiet (?:power|revolution|art|confidence|magic)\b"
-     r"|\bload-bearing\b|\bdoing (?:a lot of|the|all the) (?:heavy lifting|work)\b|\bthe honest answer\b"
-     r"|\b(?:an )?honest take\b|\bhits different\b|\bchef" + AP + r"s kiss\b|\ba masterclass in\b|\blives rent[- ]free\b"
-     r"|\bmain character energy\b|\bthe unglamorous (?:truth|part|work)\b",
+     r"\bquietly (?:revolutioniz|transform|reshap|chang|becom|redefin)\w*|\bthe quiet (?:revolution|art) of\b|\bload-bearing\b"
+     r"|\bdoing (?:the|all the) heavy lifting\b|\ba masterclass in\b|\blives rent[- ]free\b|\bhits different\b"
+     r"|\bchef" + AP + r"s kiss\b|\bmain character energy\b|\bthe unglamorous (?:truth|part|work)\b|\ba love letter to\b"
+     r"|\bit" + AP + r"s giving\b",
      "fashionable decoration", "drop the ornament and state the claim")
 rule("trend.ru", SOFT, "ru", "anywhere",
-     r"\bтих(?:ая|ую|ой) (?:революци|сил|уверенност|маги)\w*|\bтихо (?:меняет|захватывает|становится|переписывает)\b"
-     r"|\bнесущ\w* (?:конструкци|стен|опор)\w* (?:всего|бизнеса|проекта|текста)\b|\bчестный ответ\b|\bэто база\b"
-     r"|\bмастхэв\w*",
+     r"\bтих(?:ая|ую|ой) революци\w*|\bтихо (?:меняет|захватывает|переписывает)\b|\bэто база\b|\bмастхэв\w*"
+     r"|\bвау-эффект\w*|\bбез воды\b",
      "fashionable decoration", "drop the ornament and state the claim")
 rule("vague.en", SOFT, "en", "anywhere",
-     r"\bthe (?:implications|stakes|consequences|reasons|benefits|risks) are (?:significant|high|real|huge|enormous"
-     r"|structural|clear|profound|far-reaching)\b|\bthis is (?:bigger|deeper) than (?:it (?:seems|looks)|you think)\b"
-     r"|\bchanges the game\b|\bthis is what [\w ]{1,30}? (?:actually|really) looks like\b"
-     r"|\b(?:actually|really|truly) matters\b|\bthis is (?:genuinely|really|truly) (?:hard|important|difficult)\b"
-     r"|\bthis matters because\b",
-     "says that something is important or big without saying what", "name the consequence, or cut the sentence")
+     r"\bthe (?:impact|potential) (?:is|will be|could be) (?:huge|enormous|massive|profound|limitless|immense)\b"
+     r"|\bthe possibilities are (?:endless|limitless)\b|\bthis is (?:bigger|deeper) than (?:it (?:seems|looks)|you think)\b"
+     r"|\bchanges the game\b|\bthe future is (?:here|now|bright)\b|\bmore than ever\b",
+     "says that something is big without saying what", "name the consequence, or cut the sentence")
 rule("vague.ru", SOFT, "ru", "anywhere",
-     r"\b(?:последствия|ставки|причины|риски|выгоды) (?:серь[её]зные|серь[её]зны|высоки|реальны|огромны|глубже)\b"
-     r"|\bменяет правила игры\b|\bвс[её] не так просто,? как кажется\b|\bгораздо глубже,? чем кажется\b"
-     r"|\bвот (?:как|что) (?:выглядит|значит) настоящ\w+|\bпо-настоящему важн\w*|\bпочему это важно\b",
-     "says that something is important or big without saying what", "name the consequence, or cut the sentence")
+     r"\bвозможности (?:безграничны|бесконечны)\b|\bпотенциал (?:огромен|колоссален|безграничен)\b"
+     r"|\bбудущее уже (?:здесь|наступило)\b|\bменяет правила игры\b|\bвс[её] не так просто,? как кажется\b"
+     r"|\bкак никогда (?:раньше|важно|актуально)\b|\bпочему это важно\b",
+     "says that something is big without saying what", "name the consequence, or cut the sentence")
 rule("rhythm.parallel", SOFT, "any", "anywhere",
      r"\bthe one [^.!?\n]{1,40}?, the one [^.!?\n]{1,40}?,? (?:and )?the one\b"
      r"|\bт(?:от|та|те),? (?:кто|что|который|которая) [^.!?\n]{1,40}?, т(?:от|та|те),? (?:кто|что|который|которая)\b",
@@ -504,9 +500,9 @@ rule("jargon.en", SOFT, "en", "anywhere",
      "business jargon", "say the plain action: 'call you on Friday', 'fix the signup form'")
 rule("jargon.ru", SOFT, "ru", "anywhere",
      r"\bсинерги\w*|\bпрокач(?:ать|ай|айте|ивать|ивает|ка|ки|ку)\w*|\bдрайв(?:ить|ит|ят|им)\b|\bчеллендж\w*"
-     r"|\bзакры(?:ть|ваем|вает|ли) (?:вопрос|боль|потребност|задач)\w*"
+     r"|\bзакры(?:ть|ваем|вает|ли) (?:боль|потребност)\w*|\bв разрезе\b|\bпо итогу\b"
      r"|\b(?:новые|серь[её]зные|главные|основные|ключевые|современные) вызовы\b|\bточк\w* роста\b"
-     r"|\bбол(?:и|ей|ь) (?:клиент|аудитори|пользовател|бизнес)\w*|\bв моменте\b|\bинсайт\w*|\bфидб[еэ]к\w*"
+     r"|\bбол(?:и|ей|ь) (?:клиент|аудитори|пользовател|бизнес)\w*|\bинсайт\w*|\bфидб[еэ]к\w*"
      r"|\bапрув\w*|\bзасинк\w*|\bзафинал\w*|\bна одной волне\b|\bзон\w* комфорта\b|\bлучши\w* практик\w*"
      r"|\bценностн\w* предложени\w*",
      "business jargon", "say the plain action")
@@ -529,14 +525,14 @@ rule("hedge.ru-voiceless", SOFT, "ru", "anywhere",
 
 # ---- emphasis crutches, permission slips, fake intimacy --------------------
 rule("crutch.en", HARD, "en", "anywhere",
-     r"\blet that sink in\b|\bread that again\b|\bmake no mistake\b|\bthis changes everything\b"
+     r"\blet that sink in\b|\bread that (?:again|twice)\b|\bthis changes everything\b|\bsay it louder\b"
      r"|\bi can(?:not|" + AP + r"t) stress (?:this|enough)\b|\band (?:that|this)" + AP + r"s (?:okay|ok|fine|normal)\b",
      "emphasis crutch or permission slip", "cut it; if the point needs help, sharpen the point")
-rule("crutch.en-stop", HARD, "en", "sentence", r"(?:full stop|period|end of story)[.!]\s*\Z",
+rule("crutch.en-stop", HARD, "en", "sentence", r"(?:full stop|period|end of story|i" + AP + r"ll wait)[.!]\s*\Z",
      "one-word emphasis sentence", "cut it")
 rule("intimacy.en", SOFT, "en", "anywhere",
      r"\bmark my words\b|\bthis is huge\b|\byou" + AP + r"re not alone\b|\byou" + AP + r"ve got this\b"
-     r"|\btrust me\b|\bi promise\b|\bbetween you and me\b|\breal talk\b|\blet me let you in on\b"
+     r"|\btrust me\b|\bbetween you and me\b|\breal talk\b|\blet me let you in on\b"
      r"|\bhere" + AP + r"s a (?:little )?secret\b|\bi" + AP + r"m going to be vulnerable\b",
      "fake intimacy or emphasis crutch", "keep only if it is literally true for this author")
 rule("crutch.ru", HARD, "ru", "anywhere",
@@ -546,11 +542,10 @@ rule("crutch.ru", HARD, "ru", "anywhere",
 rule("crutch.ru-stop", HARD, "ru", "sentence", r"(?:точка|и точка|без вариантов)[.!]\s*\Z",
      "one-word emphasis sentence", "cut it")
 rule("intimacy.ru", SOFT, "ru", "anywhere",
-     r"\bзадумайтесь\b|\bзапомните(?: это)?[:!.]|\bподчеркну[:,]|\bвы не одни\b|\bповерьте(?: мне)?[,!.]"
-     r"|\bзуб даю\b|\bмежду нами\b|\bоткрою (?:вам )?(?:секрет|тайну)\b|\bскажу по секрету\b"
-     r"|\bбуду с вами (?:откровенен|откровенна|честен|честна)\b|\bдавайте начистоту\b",
+     r"\bзадумайтесь\b|\bвы не одни\b|\bповерьте(?: мне)?[,!.]|\bмежду нами\b|\bоткрою (?:вам )?(?:секрет|тайну)\b"
+     r"|\bскажу по секрету\b|\bположа руку на сердце\b|\bбуду с вами (?:откровенен|откровенна|честен|честна)\b"
+     r"|\bдавайте начистоту\b",
      "fake intimacy or emphasis crutch", "keep only if it is literally true for this author")
-
 # ---- recaps and morals -----------------------------------------------------
 rule("recap.marker", HARD, "en", "sentence",
      r"(?:in conclusion|in summary|to sum (?:it )?up|to summarize|to recap|in closing)\b",
@@ -590,7 +585,7 @@ rule("cleft.en", SOFT, "en", "sentence",
 
 # ---- X by X ------------------------------------------------------------------
 rule("xbyx.en", SOFT, "en", "anywhere",
-     r"\b(step|week|day|month|phase|stage|line|page|session|chapter|module|lesson|section|layer)[- ]by[- ]\1\b",
+     r"\b(step|day|week|month|stage|line|page|chapter|module|lesson|section|layer|piece|frame)[- ]by[- ]\1\b",
      "'X by X' promises a full walkthrough", "keep it only if the text goes through each one; else name what the reader gets")
 rule("xbyx.ru", SOFT, "ru", "anywhere",
      r"\bшаг за шагом\b|\bнедел\w* за неделей\b|\bдень за дн[её]м\b|\bмесяц за месяцем\b|\bэтап за этапом\b"
@@ -599,18 +594,15 @@ rule("xbyx.ru", SOFT, "ru", "anywhere",
 
 # ---- false agency, hidden actors ------------------------------------------
 rule("agency.en", SOFT, "en", "anywhere",
-     r"\bthe (?:data|numbers|research|science|market|culture|conversation|industry|algorithm) "
-     r"(?:tells|says|speaks|rewards|punishes|demands|decides|wants)\b|\bthe decision (?:emerges|emerged)\b"
-     r"|\b(?:people|humans|we all) tend to\b|\bnobody (?:designed|planned|intended|asked for) (?:this|it)\b",
-     "abstraction doing a person's job", "name who did it, or use 'you'")
-rule("agency.ru", SOFT, "ru", "anywhere",
-     r"\bданные (?:говорят|подсказывают|кричат)\b|\bцифры (?:говорят|кричат)\b"
-     r"|\bрынок (?:реша|поощря|наказыва|диктует|требует|хочет)\w*|\bлюди склонны\b"
-     r"|\bникто не (?:задумывал|планировал|проектировал)\w*|\bрешение (?:пришло|родилось|появилось|созрело)\b"
-     r"|\b(?:было|были|был|была) (?:решено|принято|сделано|создано|отмечено|установлено|выявлено|обнаружено|замечено)\b"
-     r"|\bсчитается,? что\b|\bпринято считать\b",
+     r"\bthe (?:numbers|data|results) speak for themselves\b|\bthe market (?:has spoken|decides|decided)\b"
+     r"|\b(?:a|the) decision was (?:made|taken|reached)\b|\bit was decided\b|\bmistakes were made\b"
+     r"|\busers are (?:encouraged|advised) to\b|\bfeedback (?:shaped|drove|guided) the\b|\bgrowth followed\b",
      "deed without a doer", "name who did it")
-
+rule("agency.ru", SOFT, "ru", "anywhere",
+     r"\bцифры говорят сами за себя\b|\bрынок (?:решил|рассудил|расставил)\w*|\bбыло принято решение\b|\bбыло решено\b"
+     r"|\bнаблюдается (?:рост|снижение|тенденция|увеличение)\b|\bпользователям рекомендуется\b|\bрост не заставил себя ждать\b"
+     r"|\b(?:было|были|был|была) (?:сделано|создано|отмечено|установлено|выявлено|обнаружено|замечено)\b",
+     "deed without a doer", "name who did it")
 # ---- ad mode only ------------------------------------------------------------
 rule("ad.claim", SOFT, "en", "anywhere",
      r"\b(?:the )?best\b|#1\b|\bno\.? ?1\b|\bnumber one\b|\bleading\b|\btop-rated\b|\bunbeatable\b"
