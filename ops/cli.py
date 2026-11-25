@@ -181,6 +181,11 @@ def add_parsers(sub) -> None:
     s.add_argument("--no-start", action="store_true")
     p.set_defaults(func=cmd_service)
 
+    # Durable jobs and the self-learning loop: their commands live in ops/job_cli.py and ops/learn_cli.py.
+    from . import job_cli, learn_cli
+    job_cli.add_parser(sub)
+    learn_cli.add_parser(sub)
+
     p = sub.add_parser("version", help="Archi version and git commit")
     p.set_defaults(func=cmd_version)
 

@@ -33,6 +33,14 @@ def home(tmp_path, monkeypatch):
     return h
 
 
+@pytest.fixture(autouse=True)
+def _no_detached_work(monkeypatch):
+    """No test starts a learning review, a job or a systemd unit on the host unless it asks for it
+    (core/detach.py: ARCHI_DETACH=off starts nothing)."""
+    monkeypatch.setenv("ARCHI_DETACH", "off")
+    monkeypatch.delenv("ARCHI_CONVERSATION", raising=False)
+
+
 def pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)

@@ -70,7 +70,24 @@ def validate(arg):
     if not os.path.isfile(path):
         print(f"FAIL: no SKILL.md at {path}")
         return 1
-    text = open(path, encoding="utf-8").read()
+    errs = problems(path)
+    if errs:
+        print("INVALID: " + path)
+        for e in errs:
+            print("  - " + e)
+        return 1
+    fm, _ = parse_frontmatter(open(path, encoding="utf-8").read())
+    print(f"OK: {path}  (name={fm['name']})")
+    return 0
+
+
+def problems(path):
+    """Validation problems of one SKILL.md (empty list = valid). The learning loop compares a skill's
+    problems before and after a review edit, so third-party skills that already fail are not blamed."""
+    try:
+        text = open(path, encoding="utf-8").read()
+    except (OSError, UnicodeDecodeError) as e:
+        return [f"unreadable: {e}"]
     fm, body = parse_frontmatter(text)
     errs = []
     if fm is None:
@@ -95,13 +112,7 @@ def validate(arg):
         # filled in before it counts as valid, otherwise validate is a rubber stamp.
         if fm.get("description", "").startswith("TODO") or (body and body.lstrip().startswith("TODO")):
             errs.append("still contains scaffold TODO placeholder — fill it in")
-    if errs:
-        print("INVALID: " + path)
-        for e in errs:
-            print("  - " + e)
-        return 1
-    print(f"OK: {path}  (name={fm['name']})")
-    return 0
+    return errs
 
 
 def scaffold(name, desc=None):
