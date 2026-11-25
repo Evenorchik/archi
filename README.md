@@ -47,7 +47,7 @@ reconfigure.
   never forced
 - `archi validate`: check code and config before a restart
 - `archi setup voice` (OpenAI key), `archi setup provider codex` (install and sign in the other CLI),
-  `archi setup telegram` (new bot token)
+  `archi setup telegram` (new bot token), `archi setup matrix` (the Element / Matrix door)
 - `archi pair --reset`: pair a different Telegram account
 - `archi identity set-name "Name"`: rename the agent (it does this itself when you name it)
 
@@ -58,6 +58,21 @@ curl -fsSL https://raw.githubusercontent.com/Evenorchik/archi/main/install.sh | 
   ARCHI_NONINTERACTIVE=1 ARCHI_BOT_TOKEN=<bot token> ARCHI_PROVIDER=claude \
   ARCHI_CLAUDE_OAUTH_TOKEN=<token from claude setup-token> bash
 ```
+
+## Element / Matrix door
+Archi can also answer you in Element or any other Matrix client, next to Telegram. Give the bot its own Matrix
+account (on your homeserver or on matrix.org), then run on the server:
+```bash
+archi setup matrix
+```
+It finds your homeserver (also behind a `.well-known` delegation), signs the bot account in with its password
+(only the access token is kept), asks for your own Matrix id (the only account it answers) and starts the
+`archi-matrix` service. Then, in Element, create a room **without end-to-end encryption** (New room, turn off
+"Enable end-to-end encryption") and invite the bot. Every room is its own conversation, rooms run in parallel,
+and the agent can create rooms for you. The bot cannot read encrypted rooms: invited into one, it says so and
+leaves. Commands start with `!` in Element (`!new`, `!status`, `!help`), since Element keeps `/` for its own.
+Unattended: `ARCHI_NONINTERACTIVE=1 ARCHI_MATRIX_HOMESERVER=… ARCHI_MATRIX_USER=… ARCHI_MATRIX_PASSWORD=…
+ARCHI_MATRIX_OWNER=@you:example.org archi setup matrix` (or `ARCHI_MATRIX_TOKEN` instead of user and password).
 
 ## Security
 Archi runs as root by default and executes whatever its agent decides to run. Use a dedicated server, keep the

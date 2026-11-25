@@ -80,3 +80,56 @@ def test_monster_line_is_split():
 
 def test_utf16_length_counts_emoji_as_two():
     assert render.utf16_len("😀a") == 3
+
+
+def test_shared_splitter_measures_utf8_for_matrix():
+    from core.markdown import split_markdown, utf8_len
+    text = "ж" * 30000                               # one monster line, 2 bytes per character
+    parts = split_markdown(text, 16000, measure=utf8_len)
+    assert len(parts) >= 4 and all(utf8_len(p) <= 16000 for p in parts) and "".join(parts) == text
+
+
+def test_matrix_html_blocks():
+    from doors.matrix import render as mxr
+    out = mxr.to_html("## Plan\n\n1. one\n2. two\n   - sub\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n||spoiler||")
+    assert out.startswith("<h3>Plan</h3><ol><li>one</li><li>two<ul><li>sub</li></ul></li></ol>")
+    assert "<table><thead><tr><th>a</th><th>b</th></tr></thead><tbody><tr><td>1</td><td>2</td></tr></tbody></table>" in out
+    assert "<span data-mx-spoiler>spoiler</span>" in out and matrix_balanced(out)
+
+
+MATRIX_TAGS = {"font", "del", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "p", "a", "ul", "ol", "sup", "sub",
+               "li", "b", "i", "u", "strong", "em", "s", "code", "hr", "br", "div", "table", "thead", "tbody", "tr",
+               "th", "td", "caption", "pre", "span"}          # the HTML subset the Matrix spec recommends
+
+
+def matrix_balanced(html: str) -> bool:
+    class P(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.stack, self.bad = [], []
+
+        def handle_starttag(self, tag, attrs):
+            if tag not in MATRIX_TAGS:
+                self.bad.append(tag)
+            if tag not in ("br", "hr"):
+                self.stack.append(tag)
+
+        def handle_endtag(self, tag):
+            if not self.stack or self.stack.pop() != tag:
+                self.bad.append("/" + tag)
+
+    p = P()
+    p.feed(html)
+    p.close()
+    return not p.bad and not p.stack
+
+
+def test_matrix_long_answers_are_valid_pieces():
+    from doors.matrix import render as mxr
+    md = "# Report\n\n" + "\n".join(f"- item {i} with **bold** <tag> & `code`" for i in range(3000)) + \
+         "\n\n```\n" + "\n".join(f"line {i} <x>" for i in range(2000)) + "\n```\n"
+    pieces = mxr.render_messages(md)
+    assert len(pieces) > 3
+    for body, html in pieces:
+        assert html and matrix_balanced(html), html[:300]
+        assert len(body.encode()) + len(html.encode()) < 60000

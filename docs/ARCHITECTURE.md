@@ -8,18 +8,21 @@ the agent with full access to its own server, and maintains itself (restarts, up
 ```
 /opt/archi
 ├── archi                    CLI: status | restart | logs | validate | update | identity | setup | pair |
-│                            service | version | tg … | config …  (stdlib only, /usr/local/bin/archi)
+│                            service | version | tg … | mx … | config …  (stdlib only, /usr/local/bin/archi)
 ├── install.sh               one-command installer: packages, code, venv, then `archi setup` + service
 ├── CLAUDE.md                the agent's rulebook; AGENTS.md -> CLAUDE.md for Codex
-├── core/                    shared engine, no door-specific code
+├── core/                    shared engine, no messenger-specific code
 │   ├── engine.py            run_turn(provider, prompt, session, on_event) for Claude Code and Codex
+│   ├── door.py              BaseDoor: turn -> deliver, the shared chat commands, contracts, run markers
 │   ├── conversations.py     conversation registry: key -> session id, title, state, lock
 │   ├── config.py            config/archi.env + config/identity.json
 │   ├── running.py           run markers: state/running/<door>--<key>.json while a turn runs
+│   ├── markdown.py          the door-independent half of rendering Markdown (inline HTML, splitting)
+│   ├── inbox.py             received files: .inbox/<timestamp>_<name>, the file-turn prompt
 │   ├── voice.py             speech-to-text through the OpenAI API (optional key)
 │   └── status.py            live task status model (steps, elapsed, final state)
 ├── doors/telegram/          bot in private chat and in groups, forum topics = conversations
-├── doors/matrix/            Element/Matrix rooms = conversations (optional, not shipped yet)
+├── doors/matrix/            Element/Matrix rooms = conversations (optional second door, no e2e encryption)
 ├── ops/                     the ops half of `archi`: setup.py (onboarding, CLI install and sign-in),
 │                            service.py (systemd unit, restarts, logs), validate.py, update.py,
 │                            identity.py, term.py (prompts, pty capture)
@@ -41,6 +44,16 @@ Key = door + chat + thread: `tg:<chat_id>:<thread_id|main>` ("main" = outside an
 provider session id, title, state (`open`, `closed`, `deleted`), timestamps. Every key has an optional persona
 file (`state/personas/<key>.md`) the agent can write when the user gives a topic its own rules.
 
+## Doors share one core
+A door only speaks its messenger: it receives messages, maps them to a conversation and hands them to
+`BaseDoor.turn()` (core/door.py). The rest is the same for every door: one turn at a time per conversation,
+the conversation's provider, model and session, the run marker that covers the turn including delivery, the
+answer with its `[VOICE]` and `[FILE]` markers, the chat commands (/new /status /model /provider /stop /learn
+/jobs /help, answered at once even while a turn runs), the afterturn and jobs contracts, the notice about turns
+a restart interrupted, the voice-key flow. A door implements the hooks: send_text, send_voice, send_file,
+make_live (its live status display), system_prompt (its block after the shared base prompt), turn_env and
+job_fallback (where a finished job reports when its conversation is gone).
+
 ## Telegram door (Bot API 10.5)
 - Private chat with topics: the installer enables topic mode, user-created topics and the topic sidebar through
   `setMySettings` (`has_topics_enabled`, `allows_users_to_create_topics`, `has_topic_sidebar`). The agent can
@@ -60,6 +73,42 @@ file (`state/personas/<key>.md`) the agent can write when the user gives a topic
   (no owner message): the agent introduces itself per "First run" in CLAUDE.md and asks for its name.
 - Voice notes: transcribed when an OpenAI key is configured; otherwise the agent asks for the key and writes it
   into the config itself.
+
+## Matrix door (optional, Element or any Matrix client)
+- matrix-nio without its e2e extra (no libolm, no vodozemac): the door cannot read encrypted rooms. The bot
+  needs its own account on any homeserver; `archi setup matrix` resolves the homeserver through
+  `/.well-known/matrix/client`, signs the bot in with its password once (only the access token is kept, as
+  `MATRIX_ACCESS_TOKEN`, a secret), checks it with whoami, stores `MATRIX_OWNER_ID`, installs
+  `archi-matrix.service`. Telegram stays the primary door; the installer does not ask about Matrix.
+- Every room the bot is in is a conversation `mx:<room_id>` (room-version-12 ids without a server part
+  included) with its own session; rooms run in parallel. The room name is the title (`m.room.name` updates it).
+  The bot being kicked or leaving, or the owner leaving (the bot then leaves too), archives the conversation
+  like a deleted Telegram topic.
+- Owner only: only `MATRIX_OWNER_ID`'s messages start turns and only the owner's invites are accepted; other
+  invites are rejected, everybody else is ignored, silently.
+- Encrypted rooms: invited into one (its invite state carries `m.room.encryption`), or when encryption is
+  switched on in a room the bot is in, the bot posts one plain-text notice that it cannot read encrypted rooms
+  and how to create one without encryption, then leaves; the room is recorded for `archi status`. Staying would
+  pretend to work: the owner's messages there are unreadable.
+- Sync: the door long-polls `/sync` itself and handles the event JSON as the spec documents it (only
+  `doors/matrix/api.py` touches nio). The token is kept in `state/matrix.json`: a restart replays nothing and
+  misses nothing; the first start ever skips the rooms' history; owner messages older than 24 h (the door was
+  down) are not answered. Joins and leaves send a JSON body (strict servers refuse nio's empty one).
+- Live status: ⏳ on the owner's message, an `m.notice` after 4 s edited in place (`m.replace`, at most every
+  3 s, a clock tick every 30 s), typing kept up, ✅ or ⚠️ at the end; quick answers get no notice. Notices do
+  not notify under Matrix's default push rules; the answer is an `m.text` (Markdown in `body`,
+  `org.matrix.custom.html` in `formatted_body`, split by UTF-8 size under the 64 KiB event limit).
+- Commands start with `!` (Element keeps `/` for its own commands and asks before sending unknown ones); `/`
+  works too.
+- Media: images (several in a row are one turn) as image input, files to `.inbox/`, voice messages (MSC3245)
+  transcribed or the key asked for, a pasted OpenAI key stored and its message redacted when the bot may,
+  attachments forwarded out of encrypted rooms decrypted with the key they carry. `[FILE]` goes out as
+  `m.image` (shown inline, with its size) or `m.file` within the server's upload limit, `[VOICE]` as an MSC3245
+  voice message.
+- `archi mx room create|rename`, `archi mx rooms`, `archi mx send` (stdlib) are the agent's tools; the room of
+  the turn is `ARCHI_ROOM_ID`. A room the agent creates is unencrypted and the owner is invited with the
+  creator's power level (`trusted_private_chat`). `doors/matrix/notify.post(cfg, key, text, silent=True)` posts
+  a notice from background work (the learning loop).
 
 ## Install and onboarding
 `install.sh` (bash, `curl … | bash`, as root) checks root / apt / systemd (exit codes 2-4), installs the
@@ -86,7 +135,8 @@ The engine reads `CLAUDE_CODE_OAUTH_TOKEN` from the config for every Claude turn
 service environment, and a new token works on the next turn.
 
 ## Life support
-- `archi-telegram.service`: `Restart=always`, `WorkingDirectory` and `ARCHI_HOME` = the install directory,
+- `archi-telegram.service` (and `archi-matrix.service` once the Matrix door is set up, same template):
+  `Restart=always`, `WorkingDirectory` and `ARCHI_HOME` = the install directory,
   `KillSignal=SIGTERM` to the door only (`KillMode=mixed`): on SIGTERM the door stops its turns, which kills
   their CLI process trees, and exits; leftovers get SIGKILL. The door applies its Bot API settings itself at
   every start.
@@ -98,11 +148,14 @@ service environment, and a new token works on the next turn.
   unit stays up. A restart requested from inside a turn (`ARCHI_CONVERSATION` is set) is never done in place:
   it is handed to a transient `systemd-run` unit outside the door's cgroup (a detached process without
   systemd-run) that waits until the turn has delivered its answer and the door is idle.
-- `archi validate`: syntax of every module, imports in the venv, a dry start of each door
-  (`python -m doors.telegram --check`: config, token format, construction, no network), config sanity.
-  Run before any restart after a code change.
+- `archi validate`: syntax of every module, imports in the venv, a dry start of each configured door
+  (`python -m doors.telegram --check`, `python -m doors.matrix --check`: config, token format, construction, no
+  network), config sanity. Run before any restart after a code change.
+- `ARCHI_UNIT_DIR` points the unit files elsewhere (tests, staging copies); systemctl is then never called,
+  because it would act on the host's units of the same name.
 - `archi update`: fetch the branch, stash uncommitted changes (tracked and untracked), fast-forward or rebase
   local commits, reapply the stash, reinstall requirements, validate with the new code, restart when idle.
   A conflict or a failed validation rolls the checkout back exactly (old commit, local changes in place)
   and lists the conflicting files; nothing is forced.
-- `archi status` never prints secrets; `archi logs` is journalctl over `archi-*` units, never following.
+- `archi status` never prints secrets; `archi logs [--door telegram|matrix]` is journalctl over `archi-*`
+  units, never following.

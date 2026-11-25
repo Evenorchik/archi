@@ -1,7 +1,8 @@
 """Conversation registry, persisted in state/conversations.json.
 
 A conversation is one independent agent session: a Telegram topic, the part of a chat outside any topic
-("main"), later a Matrix room. Key = door + chat + thread: `tg:<chat_id>:<thread_id|main>`.
+("main"), a Matrix room. Key = door + chat + thread: `tg:<chat_id>:<thread_id|main>`; a Matrix room has no
+threads, its key is `mx:<room_id>` (a room id may contain ':' itself, or no server part at all).
 
 The registry stores, per key: the session id per provider, title (and whether that title was confirmed by
 a live event — only a confirmed title may be used for the existence probe), kind (dm/group), state
@@ -31,13 +32,21 @@ KINDS = ("dm", "group")
 MAIN = "main"
 
 
+MATRIX = "mx"          # key prefix of Matrix rooms: `mx:<room_id>`, no thread part
+
+
 def make_key(door: str, chat_id: int | str, thread_id: int | str | None = None) -> str:
+    if door == MATRIX:
+        return f"{MATRIX}:{chat_id}"
     return f"{door}:{chat_id}:{thread_id if thread_id not in (None, '', 0, MAIN) else MAIN}"
 
 
 def parse_key(key: str) -> tuple[str, str, int | None]:
-    """`tg:-100123:45` -> ("tg", "-100123", 45); `tg:42:main` -> ("tg", "42", None)."""
+    """`tg:-100123:45` -> ("tg", "-100123", 45); `tg:42:main` -> ("tg", "42", None);
+    `mx:!room:example.org` -> ("mx", "!room:example.org", None)."""
     door, rest = key.split(":", 1)
+    if door == MATRIX:
+        return door, rest, None
     chat, _, thread = rest.rpartition(":")
     if not chat:
         return door, thread, None
@@ -67,8 +76,10 @@ class Conversation:
         return parse_key(self.key)[0]
 
     @property
-    def chat_id(self) -> int:
-        return int(parse_key(self.key)[1])
+    def chat_id(self) -> int | str:
+        """Telegram chat id (int), or the Matrix room id (str)."""
+        door, chat, _thread = parse_key(self.key)
+        return chat if door == MATRIX else int(chat)
 
     @property
     def thread_id(self) -> int | None:
@@ -79,6 +90,8 @@ class Conversation:
         return self.thread_id is None
 
     def display_title(self) -> str:
+        if self.door == MATRIX:
+            return self.title or "unnamed room"
         if self.is_main:
             return self.title or "main"
         return self.title or f"topic {self.thread_id}"
@@ -154,11 +167,18 @@ class Registry:
             if c.state == "deleted" and not include_deleted:
                 continue
             out.append(c)
-        out.sort(key=lambda c: (c.chat_id, c.thread_id or 0))
+        # Telegram chat ids sort numerically, Matrix room ids as text; never compare an int with a str.
+        out.sort(key=lambda c: (c.door, *((c.chat_id, "") if isinstance(c.chat_id, int) else (0, c.chat_id)),
+                                c.thread_id or 0))
         return out
 
     def chat(self, chat_id: int | str) -> dict:
         return dict(self._read()["chats"].get(str(chat_id)) or {})
+
+    def chats(self, door: str | None = None) -> dict[str, dict]:
+        """Metadata of every known chat (Matrix rooms carry door="mx"), keyed by chat id."""
+        return {cid: dict(meta) for cid, meta in self._read()["chats"].items()
+                if door is None or (meta or {}).get("door") == door}
 
     # ------------------------------------------------------------------ mutations
     def upsert(self, key: str, **changes) -> Conversation:

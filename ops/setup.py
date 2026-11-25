@@ -4,12 +4,15 @@
   archi setup telegram           the bot token (checked with getMe)
   archi setup provider [NAME]    install the Claude Code or Codex CLI, sign in, check it with a real request
   archi setup voice              add, replace or remove the OpenAI key for voice notes
+  archi setup matrix             the optional Element / Matrix door: bot account, owner, archi-matrix.service
   archi pair [--reset] [--wait]  the one-time code that makes a Telegram account the owner
 
 Interactive by default: answers come from the terminal and secrets are never echoed. With
 ARCHI_NONINTERACTIVE=1 (or --noninteractive) nothing is asked and the answers come from the environment:
   ARCHI_BOT_TOKEN, ARCHI_PROVIDER (claude|codex), ARCHI_OPENAI_KEY, ARCHI_CLAUDE_OAUTH_TOKEN,
-  ARCHI_SKIP_CLI_INSTALL=1, ARCHI_SKIP_LOGIN=1, ARCHI_RECONFIGURE=1 (replace an existing config).
+  ARCHI_SKIP_CLI_INSTALL=1, ARCHI_SKIP_LOGIN=1, ARCHI_RECONFIGURE=1 (replace an existing config);
+  for `archi setup matrix`: ARCHI_MATRIX_HOMESERVER, ARCHI_MATRIX_USER + ARCHI_MATRIX_PASSWORD (or
+  ARCHI_MATRIX_TOKEN), ARCHI_MATRIX_OWNER.
 
 Provider CLIs are installed with their vendors' official standalone installers and signed in headlessly:
   * Claude Code: `claude setup-token` (browser link + pasted code, prints a one-year token that Archi keeps
@@ -454,6 +457,120 @@ def step_voice(cfg: Config, ni: bool, *, remove: bool = False, key_from_stdin: b
             return
 
 
+# =========================================================================================== matrix
+
+def matrix_login(api, user: str, password: str) -> dict:
+    """Password -> access token. The password is used for this one request and never stored."""
+    res = api.login(user, password, device_name="Archi")
+    if not res.get("access_token"):
+        raise SetupError("the homeserver accepted the login but returned no access token")
+    return res
+
+
+def step_matrix(cfg: Config, ni: bool) -> None:
+    """The Element / Matrix door: resolve the homeserver (.well-known), sign the bot account in with its
+    password (only the access token is kept), check it with whoami, store the owner, install the service."""
+    from doors.matrix.api import MxError, SyncApi, is_mxid, resolve_homeserver
+    from . import service
+
+    current = cfg.get("MATRIX_HOMESERVER")
+    if ni:
+        server = os.environ.get("ARCHI_MATRIX_HOMESERVER", "").strip() or current
+        if not server:
+            raise SetupError("ARCHI_MATRIX_HOMESERVER is not set")
+    else:
+        say("The bot needs its own Matrix account (not yours): register one on your homeserver or on matrix.org,\n"
+            "for example in Element with a second browser profile. You need its user name and password once.")
+        server = term.ask(f"Homeserver of the bot account [{current or 'matrix.org'}]: ", current or "matrix.org")
+    try:
+        base, delegated = resolve_homeserver(server)
+    except MxError as e:
+        raise SetupError(e.error) from None
+    say(f"  ✓ Homeserver: {base}" + (" (from the server's .well-known)" if delegated else ""))
+
+    token = os.environ.get("ARCHI_MATRIX_TOKEN", "").strip() if ni else ""
+    login: dict = {}
+    old_token = cfg.get("MATRIX_ACCESS_TOKEN") if base == current else ""
+    if not token and old_token and not ni and term.ask_yes("  Keep the bot's current sign-in?", True):
+        token = old_token
+    if not token:
+        if ni:
+            user = os.environ.get("ARCHI_MATRIX_USER", "").strip()
+            password = os.environ.get("ARCHI_MATRIX_PASSWORD", "")
+            if not user or not password:
+                if not old_token:
+                    raise SetupError("set ARCHI_MATRIX_USER and ARCHI_MATRIX_PASSWORD (or ARCHI_MATRIX_TOKEN)")
+                token = old_token
+            else:
+                try:
+                    login = matrix_login(SyncApi(base), user, password)
+                except MxError as e:
+                    raise SetupError(f"the bot could not sign in: {e}") from None
+        else:
+            for _ in range(3):
+                user = term.ask("  Bot account (user name, or @name:server): ").strip()
+                password = ask_secret("  Its password (hidden; used once to sign in, never stored): ")
+                if not user or not password:
+                    continue
+                try:
+                    login = matrix_login(SyncApi(base), user, password)
+                    break
+                except MxError as e:
+                    say(f"  ✗ Sign-in failed: {e}")
+            else:
+                raise SetupError("the bot account could not sign in")
+        token = token or login.get("access_token", "")
+    try:
+        who = SyncApi(base, token).whoami()
+    except MxError as e:
+        raise SetupError(f"the access token does not work: {e}") from None
+    bot = str(who.get("user_id") or "")
+    device = str(who.get("device_id") or login.get("device_id") or cfg.get("MATRIX_DEVICE_ID") or "")
+    say(f"  ✓ Signed in as {bot}" + (f" (device {device})" if device else ""))
+
+    owner_now = cfg.get("MATRIX_OWNER_ID")
+    if ni:
+        owner = os.environ.get("ARCHI_MATRIX_OWNER", "").strip() or owner_now
+    else:
+        shown = f" [{owner_now}]" if owner_now else ""
+        owner = term.ask(f"  Your own Matrix id, the owner the bot answers{shown} (e.g. @you:matrix.org): ",
+                         owner_now).strip()
+    if not is_mxid(owner):
+        raise SetupError(f"the owner {owner!r} is not a Matrix user id (@name:server)")
+    if owner == bot:
+        raise SetupError("the owner must be your own account, not the bot's")
+    cfg.update({"MATRIX_HOMESERVER": base, "MATRIX_USER_ID": bot, "MATRIX_ACCESS_TOKEN": token,
+                "MATRIX_DEVICE_ID": device, "MATRIX_OWNER_ID": owner})
+    say(f"  ✓ Saved to {cfg.path}: the bot {bot} answers only {owner}")
+
+    try:
+        rooms = SyncApi(base, token).rooms()
+    except MxError:
+        rooms = []
+    if rooms:
+        say("  Rooms of the bot account:")
+    for r in rooms:
+        if r["encrypted"]:
+            flag = "ENCRYPTED: the door cannot read it and leaves it; use a room without encryption"
+        else:
+            flag = "joined" if r["membership"] == "join" else "invited (accepted when the owner sent the invite)"
+        say(f"    «{r['name'] or 'no name'}» · {flag}")
+
+    if not service.have_systemd():
+        say(f"\nsystemd is not running here; start the door by hand: ARCHI_HOME={cfg.home} "
+            f"{service.venv_python()} -m doors.matrix")
+    else:
+        say("\nStarting the archi-matrix service …")
+        if service.install_unit("matrix", home=cfg.home) != 0:
+            raise SetupError("the archi-matrix service did not start; see `archi logs --door matrix`")
+    say(f"""
+Next, in Element, signed in as {owner}:
+  1. Create a room WITHOUT encryption: New room, then turn off "Enable end-to-end encryption"
+     (it cannot be turned off later, and the bot cannot read encrypted rooms).
+  2. Invite {bot} to it. The bot joins within a few seconds and answers there.
+Every room is a separate conversation; the agent can create rooms for you too.""")
+
+
 def ensure_defaults(cfg: Config) -> None:
     """Every key the door reads is present (empty = default); a pairing code exists until there is an owner."""
     if not cfg.path.exists():
@@ -579,6 +696,8 @@ def run(args) -> int:
             step_provider(cfg, ni, getattr(args, "provider", None))
         elif what == "voice":
             step_voice(cfg, ni, remove=getattr(args, "remove", False), key_from_stdin=getattr(args, "key_stdin", False))
+        elif what == "matrix":
+            step_matrix(cfg, ni)
         return 0
     except Aborted:
         say("\nSetup cancelled. Run `archi setup` again to finish it.")

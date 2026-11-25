@@ -7,10 +7,10 @@ become documents (pictures as photos), `[VOICE]` blocks become voice notes.
 from __future__ import annotations
 
 import os
-import re
 import tempfile
-import time
 from pathlib import Path
+
+from core.inbox import inbox_path, safe_name  # noqa: F401  (safe_name is re-exported)
 
 from .api import TgError
 
@@ -18,13 +18,6 @@ MAX_DOWNLOAD = 20 * 1024 * 1024        # Bot API getFile limit
 MAX_UPLOAD = 50 * 1024 * 1024
 PHOTO_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 PHOTO_MAX = 10 * 1024 * 1024
-
-
-def safe_name(raw: str | None, default: str = "file") -> str:
-    """Strip any path component and hostile characters from a user-supplied filename."""
-    base = Path(raw or default).name
-    base = re.sub(r"[^A-Za-z0-9._-]", "_", base).lstrip(".") or default
-    return base[:80]
 
 
 def attachment_of(msg: dict) -> tuple[str, dict] | None:
@@ -48,9 +41,7 @@ async def download(api, obj: dict, dest: Path) -> Path:
 async def save_to_inbox(api, kind: str, obj: dict, inbox: Path) -> Path:
     ext = {"video": ".mp4", "animation": ".mp4", "video_note": ".mp4", "voice": ".ogg", "audio": ".mp3",
            "photo": ".jpg", "sticker": ".webp"}.get(kind, "")
-    name = safe_name(obj.get("file_name") or f"{kind}{ext}")
-    dest = inbox / f"{time.strftime('%Y%m%d-%H%M%S')}_{name}"
-    return await download(api, obj, dest)
+    return await download(api, obj, inbox_path(inbox, obj.get("file_name") or f"{kind}{ext}"))
 
 
 async def save_temp(api, obj: dict, suffix: str) -> Path:
