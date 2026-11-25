@@ -17,13 +17,21 @@ the agent with full access to its own server, and maintains itself (restarts, up
 │   ├── config.py            config/archi.env + config/identity.json
 │   ├── running.py           run markers: state/running/<door>--<key>.json while a turn runs
 │   ├── voice.py             speech-to-text through the OpenAI API (optional key)
-│   └── status.py            live task status model (steps, elapsed, final state)
+│   ├── status.py            live task status model (steps, elapsed, final state)
+│   ├── afterturn.py         door hook of the learning loop: turn log, thresholds, /learn
+│   ├── learnlog.py          state of the learning loop (state/learn/: config, turn logs, counters, runs)
+│   ├── jobs.py              durable jobs: launch, runner, reaper, cancel, the door's report contract
+│   ├── detach.py            start work outside the turn and the door's cgroup (systemd-run or setsid)
+│   └── notify.py            post a notice into a conversation from outside its door (tg:, mx:)
 ├── doors/telegram/          bot in private chat and in groups, forum topics = conversations
 ├── doors/matrix/            Element/Matrix rooms = conversations (optional, not shipped yet)
 ├── ops/                     the ops half of `archi`: setup.py (onboarding, CLI install and sign-in),
 │                            service.py (systemd unit, restarts, logs), validate.py, update.py,
 │                            identity.py, term.py (prompts, pty capture)
-├── tools/                   new_skill.py, memory_search.py, durable jobs, self-learning loop
+├── tools/                   new_skill.py (skill scaffold/validate/snapshot), memory_search.py (FTS5 search),
+│   │                        workflow_job.py (a Claude workflow as a durable job)
+│   └── learn/               self-learning loop: review.py, curator.py, digest.py, prompts.py, stores.py,
+│                            reviewer.py
 ├── skills/                  skills shipped with the base; .claude/skills -> ../skills
 ├── config/  state/  logs/   runtime data (git-ignored)
 └── memory/  knowledge/  sessions/   the agent's own memory (git-ignored)
@@ -106,3 +114,23 @@ service environment, and a new token works on the next turn.
   A conflict or a failed validation rolls the checkout back exactly (old commit, local changes in place)
   and lists the conflicting files; nothing is forced.
 - `archi status` never prints secrets; `archi logs` is journalctl over `archi-*` units, never following.
+
+## Durable jobs
+Work that must outlive a turn: `archi job run -- <command>`, `archi job agent "<task>"` (a nested
+`engine.run_turn` in a fresh session), `tools/workflow_job.py launch --script x.js` (a nested `claude -p` that
+only runs that workflow). State in `state/jobs/<id>/` (spec, status, output, result). The runner
+(`archi job _run <id>`) is a transient systemd unit `archi-job-<id>` outside the door's cgroup (setsid double
+fork without systemd), at most `JOBS_MAX_ACTIVE` (3) at once. A reaper marks jobs whose runner died (pid +
+start time + boot id) as failed; cancel kills the whole tree. Every job belongs to a conversation: the door
+polls `jobs.finished_unreported()` every 5 s and starts a report turn there with `jobs.report_prompt()`.
+
+## Self-learning loop
+`afterturn.turn_finished()` appends every delivered turn to `state/learn/turns/<conversation>.jsonl` (prompt,
+answer, step labels: provider-independent) and counts it; every 10 owner turns (memory) or 60 tool calls
+(skills) it starts `tools/learn/review.py` detached (transient unit, nice 10, one at a time). The review digests
+the turns since the conversation's watermark, backs up and stages the memory store and `skills/`, runs the
+reviewer CLI on the copies (claude: acceptEdits, only file tools, writes confined to the staged dirs; codex:
+`-s workspace-write` in the stage), validates (memory frontmatter, index, secrets; each skill against its own
+problems before the run, rolled back otherwise), applies three-way (live changes win), advances the watermark
+and posts a silent notice through `core/notify.py`. The weekly curator (`archi-learn-curator.timer`, installed
+by `archi learn enable`) consolidates memory the same way; its first run is a dry run reported to the owner.

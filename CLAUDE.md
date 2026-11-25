@@ -74,6 +74,43 @@ Your code is a git repository: `$ARCHI_HOME`. Work like this:
 6. `archi update` pulls the upstream repository and reapplies local changes; if it reports conflicts, resolve
    them carefully and keep the owner's customisations.
 
+## Long tasks: durable jobs
+A turn ends with its final answer, and everything it started dies with it: background shell commands,
+sub-agents, workflows. When work must outlive the turn (a long build, a download, a test suite, a multi-agent
+workflow, anything that may take more than a few minutes), start it as a durable job and end the turn:
+- `archi job run [--label L] [--cwd DIR] -- <command …>`: a long shell command (a single argument runs through
+  `bash -c`); its result is the exit code and the end of its output.
+- `archi job agent [--label L] "<task>"`: a separate agent turn in a fresh session, working in your home
+  directory; its result is its final answer. Write the task so it stands on its own: that turn sees nothing of
+  this conversation.
+- `python3 tools/workflow_job.py launch --script <path.js> [--args-file <json>] [--label L]`: a Claude workflow
+  script, run to completion (Claude only).
+
+A job runs outside the door's service, so restarting a door does not kill it. It belongs to the conversation
+it was started from: when it ends, the door starts a new turn in that conversation with the outcome, and you
+report it to the owner. So start it, tell the owner in one line what runs and that the result will follow,
+and finish your answer. Check jobs with `archi job list` / `archi job show <id>` (never with `ps`: jobs run
+detached), stop one with `archi job cancel <id>`. At most 3 jobs run at once (`JOBS_MAX_ACTIVE` in the config;
+`--force` goes beyond it).
+
+## Self-learning loop
+After every 10 owner turns, or 60 tool calls, of a conversation a background review reads its recent turns
+(the owner's messages, your answers, the step names) and saves what is worth keeping: memory facts (one fact
+per file in the memory store) and small edits to `skills/` (the previous version stays in the skill's
+`.history/`). It works on copies: a result that fails validation is not applied, a skill edit that breaks the
+skill is rolled back, and anything you changed meanwhile wins. When something changed, a silent
+"🧠 Session review" notice appears in that conversation. `/learn` reviews the current conversation now. A weekly
+curator (`archi-learn-curator.timer`) merges duplicate facts and archives stale ones (never deletes); its first
+run is a dry run whose report is posted to the owner.
+- `archi learn status` shows what ran and what is pending; `archi learn review --dry-run` shows what a review
+  would change, without changing anything.
+- Settings live in `state/learn/config.json`: the thresholds, `skill_mode` (`auto` edits skills, `propose` only
+  writes proposals to `state/learn/proposals/`, `off`), `notify`, and `exclude_conversations`. When the owner
+  asks you not to learn from a topic, add its conversation key there: nothing of it is logged any more.
+- `archi learn disable` turns the whole loop off (nothing is logged or reviewed, the curator timer is removed);
+  `archi learn enable` turns it back on and installs the weekly curator.
+- A review can be wrong: when the owner says a saved fact is wrong, fix or delete that memory file.
+
 ## Memory
 Nothing survives a session unless you write it down. Use the files, search before re-reading:
 - `knowledge/<topic>.md` — facts about the owner's projects, servers, decisions. One topic per file.
