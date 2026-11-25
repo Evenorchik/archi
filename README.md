@@ -1,5 +1,7 @@
 # Archi
 
+**English** · [Русский](README.ru.md)
+
 **A self-hosted personal agent you talk to from Telegram.** Archi runs on your own Linux server, drives a
 coding-agent CLI (Claude Code or OpenAI Codex) with your subscription, and answers you in Telegram: in a private
 chat with your bot or in a group, with one independent conversation per topic. It has full access to its server,
@@ -13,13 +15,15 @@ so it can install things, run services, write and fix code, and maintain itself.
   topics and can create topics for you. Element/Matrix is available as a second door.
 - **Your subscription, no API bills.** Claude Code (Claude subscription) or Codex (ChatGPT subscription); switch
   per chat with `/provider`.
-- **Live progress.** While a task runs you see its steps; long tasks keep going after the reply.
+- **Live progress.** While a task runs you see its steps. Long work runs as a durable job that outlives
+  the reply, and when it ends the agent reports back in the same conversation.
 - **Life support.** systemd services, safe restarts that wait for running tasks, validation before restarting
   its own code, `archi update`.
-- **Memory and self-improvement.** Notes, session logs and searchable memory; a self-review loop that writes
-  lessons and improves skills; tools to create new skills.
+- **Memory and self-improvement.** Notes, session logs and searchable memory. Every few turns a background
+  review reads the conversation, saves facts and lessons, improves skills and tells you briefly what changed.
 - **Skills included:** brainstorming, adversarial review of its own diffs, repository indexing, answers as HTML
-  pages, web pages to Markdown, a writing-quality gate (`clean-copy`), and an optional design suite.
+  pages, web pages to Markdown, a writing-quality gate (`clean-copy`), a design suite, and optional skills
+  that need extra tools: image sets (Gemini API key), Blender modelling (Blender MCP), video editing (ffmpeg).
 
 ## Quick start
 On a fresh Ubuntu 22.04+ / Debian 12+ server, as root:
@@ -50,6 +54,7 @@ reconfigure.
   `archi setup telegram` (new bot token), `archi setup matrix` (the Element / Matrix door)
 - `archi pair --reset`: pair a different Telegram account
 - `archi identity set-name "Name"`: rename the agent (it does this itself when you name it)
+- `archi job list`: durable jobs; `archi learn status`: how the learning loop is set up
 
 ### Unattended install
 Every question has an environment variable, see the header of `install.sh`. For example:
@@ -79,4 +84,5 @@ Archi runs as root by default and executes whatever its agent decides to run. Us
 bot private (only the paired owner is answered), and keep backups.
 
 ## License
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE). The design skills come from the impeccable project under Apache-2.0, see
+`skills/NOTICE-impeccable.md`.

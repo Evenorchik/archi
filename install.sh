@@ -164,6 +164,13 @@ start_service() {
   step "Starting the archi-telegram service"
   archi service install || die 9 "The service did not start; see \`archi logs\` (and \`archi validate\`)."
   ok "archi-telegram is running and starts at boot"
+  # The self-learning loop is part of the base: reviews run after turns, and a weekly timer consolidates the
+  # memory (its first run is a dry run reported to the owner). `archi learn disable` turns both off.
+  if archi learn enable >/dev/null 2>&1; then
+    ok "self-learning loop on, weekly memory clean-up scheduled (archi learn disable turns it off)"
+  else
+    warn "the weekly memory clean-up timer was not installed; run \`archi learn enable\` later"
+  fi
 }
 
 pairing() {
