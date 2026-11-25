@@ -17,7 +17,9 @@ import sys
 import termios
 import tty
 
-ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
+ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()*+][0-9A-Za-z]"
+                  r"|\x1b[0-9=>@-Z\\-_]")
+CURSOR_FORWARD = re.compile(r"\x1b\[(\d*)C")      # terminal UIs draw spaces as "move right N"
 
 
 class Aborted(Exception):
@@ -112,6 +114,7 @@ def ask_choice(prompt: str, options: list[tuple[str, str]], default: str) -> str
 
 
 def strip_ansi(text: str) -> str:
+    text = CURSOR_FORWARD.sub(lambda m: " " * int(m.group(1) or 1), text)
     return ANSI.sub("", text).replace("\r\n", "\n").replace("\r", "\n")
 
 

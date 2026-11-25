@@ -336,14 +336,20 @@ def codex_browser_login(binary: str) -> bool:
         for _ in range(3):
             pasted = ask_secret("Address of that page (hidden): ", join_paste=True)
             parts = urlsplit(pasted)
-            if parts.port == 1455 and parts.path.startswith("/auth/callback") and "code=" in parts.query:
+            if not (parts.port == 1455 and parts.path.startswith("/auth/callback") and "code=" in parts.query):
+                say("  That is not it: the address starts with http://127.0.0.1:1455/auth/callback?code=")
+                continue
+            local = urlunsplit(("http", "127.0.0.1:1455", parts.path, parts.query, ""))
+            res = subprocess.run(["curl", "-sS", "--max-time", "30", "-o", "/dev/null", "-w", "%{http_code}",
+                                  local], capture_output=True, text=True, timeout=40)
+            status = res.stdout.strip()
+            if status.startswith(("2", "3")):
                 break
-            say("  That is not it: the address starts with http://127.0.0.1:1455/auth/callback?code=")
+            say(f"  The sign-in server here refused that address (HTTP {status or 'error'}): use the address "
+                "from this sign-in attempt, the newest one.")
         else:
             proc.kill()
             return False
-        local = urlunsplit(("http", "127.0.0.1:1455", parts.path, parts.query, ""))
-        subprocess.run(["curl", "-sS", "--max-time", "30", "-o", "/dev/null", local], timeout=40)
         rest, _ = proc.communicate(timeout=90)
         out = (seen + (rest or b"")).decode("utf-8", "replace")
     except subprocess.TimeoutExpired:

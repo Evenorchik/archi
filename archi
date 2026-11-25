@@ -54,6 +54,10 @@ def cmd_config(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:   # keep our lines in order with the output of the subprocesses we run (pipes, journald)
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):
+        pass
     ap = argparse.ArgumentParser(prog="archi", description="Archi command line",
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)

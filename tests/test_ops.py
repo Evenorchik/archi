@@ -12,7 +12,7 @@ import pytest
 from core import running
 from core.config import Config
 from doors.telegram.api import TgError
-from ops import identity, service, setup, update, validate
+from ops import identity, service, setup, term, update, validate
 
 ROOT = Path(__file__).resolve().parent.parent
 DEAD_PID = 2 ** 22 + 4321
@@ -234,6 +234,11 @@ def test_find_oauth_token_unwrapped_wrapped_and_framed():
     framed = f"│ {tok[:50]} │\n│ {tok[50:]} │\n│ Store this token securely │"
     assert setup.find_oauth_token(framed) == tok
     assert setup.find_oauth_token("Paste code here if prompted >") is None
+    # how Claude Code's renderer actually draws: spaces as cursor-forward, ESC 7 / ESC 8, charset switches
+    ink = (f"\x1b7\x1b[1CYour\x1b[1COAuth\x1b[1Ctoken:\x1b8\r\n\r\n\x1b[2C{tok}\x1b[3C\r\n"
+           "\x1b[2CStore\x1b[1Cthis\x1b[1Ctoken\x1b(B")
+    assert setup.find_oauth_token(ink) == tok
+    assert term.strip_ansi("\x1b7\x1b[1CWelcome\x1b[1Cto\x1b8") == " Welcome to"
 
 
 def test_find_login_url():
