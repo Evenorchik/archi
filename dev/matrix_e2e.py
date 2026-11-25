@@ -563,6 +563,23 @@ def run(port):
     check("archi validate dry-starts the Matrix door", res.returncode == 0 and "dry start: matrix (door ok" in res.stdout,
           res.stdout[-1500:])
 
+    # ---- the homeserver goes away while an answer is being delivered
+    m5 = owner.text(room_a, "fake:slow during an outage")
+    wait(lambda: bot_reactions(owner, room_a, m5), 15)
+    sh("docker", "stop", "-t", "2", CONTAINER, timeout=60)
+    outbox = HOME / "state" / "outbox"
+    kept = wait(lambda: list(outbox.glob("matrix--*.json")), 120, 1.0)
+    check("outage: the undelivered answer is kept on disk (0600)",
+          kept and (kept[0].stat().st_mode & 0o777) == 0o600 and "fake:slow during an outage" in kept[0].read_text())
+    sh("docker", "start", CONTAINER, timeout=60)
+    assert wait(_up, 60), "homeserver did not come back"
+    late = wait(lambda: [e for e in bot_msgs(owner, room_a, "m.text")
+                         if e["content"]["body"].startswith("_(Delivered late:")], 120, 2.0)
+    answers = [e for e in bot_msgs(owner, room_a, "m.text") if "fake:slow during an outage" in e["content"]["body"]]
+    check("outage: delivered late once the server is back, marked as late", late and len(answers) == 1)
+    check("outage: the outbox is empty again", wait(lambda: not list(outbox.glob("*.json")), 30))
+    check("outage: the owner's message ends with ✅", wait(lambda: ("✅", False) in bot_reactions(owner, room_a, m5), 30))
+
     # ---- restart in the middle of a turn
     m4 = owner.text(room_a, "fake:hang during restart")
     wait(lambda: bot_reactions(owner, room_a, m4), 15)

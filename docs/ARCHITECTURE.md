@@ -58,9 +58,21 @@ A door only speaks its messenger: it receives messages, maps them to a conversat
 the conversation's provider, model and session, the run marker that covers the turn including delivery, the
 answer with its `[VOICE]` and `[FILE]` markers, the chat commands (/new /status /model /provider /stop /learn
 /jobs /help, answered at once even while a turn runs), the afterturn and jobs contracts, the notice about turns
-a restart interrupted, the voice-key flow. A door implements the hooks: send_text, send_voice, send_file,
-make_live (its live status display), system_prompt (its block after the shared base prompt), turn_env and
-job_fallback (where a finished job reports when its conversation is gone).
+a restart interrupted, the voice-key flow. A door implements the hooks: send_text / send_voice / send_file,
+is_transient, make_live (its live status display), system_prompt (its block after the shared base prompt),
+turn_env, can_post, job_fallback (where a finished job reports when its conversation is gone) and
+delivered_late.
+
+An answer never vanishes. A send that fails for a passing reason (no network, a server error, a rate limit) is
+retried with a bounded backoff (1, 2, 4, 8, 15 s; Matrix retries one message under one transaction id, so the
+server stores it once). What still could not be sent is kept in `state/outbox/` (0600) and delivered, marked as
+late, when the messenger answers again (a check every 30 s; Matrix also right after its sync recovers) or at
+the next start; a door stopped in the middle of a delivery keeps the rest there too. The live status shows the
+outcome only after the delivery: ✅ (Matrix) means the owner has the answer, a kept answer shows ⚠️ and a
+footer saying it follows, and its late delivery turns the ⚠️ into ✅. The afterturn hook runs only for an
+answer that reached the owner (for a kept one, when it is delivered). A finished job counts as reported only
+after its report was delivered or kept: while its report turn waits or runs it is not offered twice, and a
+stop before that offers it again after the restart (at least once).
 
 ## Telegram door (Bot API 10.5)
 - Private chat with topics: the installer enables topic mode, user-created topics and the topic sidebar through
@@ -93,7 +105,11 @@ job_fallback (where a finished job reports when its conversation is gone).
   The bot being kicked or leaving, or the owner leaving (the bot then leaves too), archives the conversation
   like a deleted Telegram topic.
 - Owner only: only `MATRIX_OWNER_ID`'s messages start turns and only the owner's invites are accepted; other
-  invites are rejected, everybody else is ignored, silently.
+  invites are rejected, everybody else is ignored, silently. The door keeps every room's members (from the
+  sync; one `/members` call for a room it has not seen whole) and never posts into a room the owner is not in
+  (`archi mx send` and `notify.post` refuse too); the bot leaves such a room. A finished job whose room is gone
+  reports only in a private room of the owner and the bot (the owner joined), else in a room the door made for
+  that, else in a new unencrypted room with the owner invited.
 - Encrypted rooms: invited into one (its invite state carries `m.room.encryption`), or when encryption is
   switched on in a room the bot is in, the bot posts one plain-text notice that it cannot read encrypted rooms
   and how to create one without encryption, then leaves; the room is recorded for `archi status`. Staying would
@@ -101,7 +117,11 @@ job_fallback (where a finished job reports when its conversation is gone).
 - Sync: the door long-polls `/sync` itself and handles the event JSON as the spec documents it (only
   `doors/matrix/api.py` touches nio). The token is kept in `state/matrix.json`: a restart replays nothing and
   misses nothing; the first start ever skips the rooms' history; owner messages older than 24 h (the door was
-  down) are not answered. Joins and leaves send a JSON body (strict servers refuse nio's empty one).
+  down) are not answered. Joins and leaves send a JSON body (strict servers refuse nio's empty one), and the
+  access token always travels in the `Authorization` header, never in a URL. Every transport failure comes out
+  of the client as an `MxError` with status 0, so it is retried like a server error. `archi setup matrix`
+  signs the stored device in again instead of adding one and logs the replaced token out; a running door picks
+  the new token up from the config when the old one is refused.
 - Live status: ⏳ on the owner's message, an `m.notice` after 4 s edited in place (`m.replace`, at most every
   3 s, a clock tick every 30 s), typing kept up, ✅ or ⚠️ at the end; quick answers get no notice. Notices do
   not notify under Matrix's default push rules; the answer is an `m.text` (Markdown in `body`,
