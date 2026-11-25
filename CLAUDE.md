@@ -92,8 +92,8 @@ workflow, anything that may take more than a few minutes), start it as a durable
 - `python3 tools/workflow_job.py launch --script <path.js> [--args-file <json>] [--label L]`: a Claude workflow
   script, run to completion (Claude only).
 
-A job runs outside the door's service, so restarting a door does not kill it (unless `archi job` warned that
-systemd-run failed: then avoid restarts until it ends). It belongs to the conversation
+A job runs in a systemd unit of its own, outside the door's service, so restarting a door does not kill it
+(where systemd runs but cannot start that unit, `archi job` refuses and says why). It belongs to the conversation
 it was started from: when it ends, the door starts a new turn in that conversation with the outcome, and you
 report it to the owner. So start it, tell the owner in one line what runs and that the result will follow,
 and finish your answer. Check jobs with `archi job list` / `archi job show <id>` (never with `ps`: jobs run
@@ -104,7 +104,8 @@ detached), stop one with `archi job cancel <id>`. At most 3 jobs run at once (`J
 After every 10 owner turns, or 60 tool calls, of a conversation a background review reads its recent turns
 (the owner's messages, your answers, the step names) and saves what is worth keeping: memory facts (one fact
 per file in the memory store) and small edits to `skills/` (the previous version stays in the skill's
-`.history/`). It works on copies: a result that fails validation is not applied, a skill edit that breaks the
+`.history/`; only Markdown changes go live, a script or config it wrote waits in `state/learn/proposals/`
+for the owner). It works on copies: a result that fails validation is not applied, a skill edit that breaks the
 skill is rolled back, and anything you changed meanwhile wins. When something changed, a silent
 "🧠 Session review" notice appears in that conversation. `/learn` reviews the current conversation now. A weekly
 curator (`archi-learn-curator.timer`) merges duplicate facts and archives stale ones (never deletes); its first

@@ -16,7 +16,8 @@ test ever leaves a unit or a stray review behind. Transient unit names start wit
 
 Limit of the fallback: a double fork leaves the caller's process tree, not its cgroup. On a machine without
 systemd that is all there is; but when systemd runs the door and only systemd-run failed, work started this
-way still sits in the door's cgroup and a door restart kills it. The result carries a warning then.
+way still sits in the door's cgroup and a door restart kills it. `fallback=False` (durable jobs) refuses
+then, with the reason; with the default (reviews, which are cheap to lose) the work starts with a warning.
 
 The process gets exactly the environment it is given. systemd-run receives that environment on its command
 line, so it must never hold secrets: Archi's processes read their credentials from config/archi.env.
@@ -44,10 +45,13 @@ def mode() -> str:
     return m if m in MODES else "auto"
 
 
+def systemd_running() -> bool:
+    return Path("/run/systemd/system").is_dir()
+
+
 def systemd_usable() -> bool:
     """systemd runs this machine, systemd-run exists and we may start system units (root)."""
-    return (Path("/run/systemd/system").is_dir() and shutil.which("systemd-run") is not None
-            and os.geteuid() == 0)
+    return systemd_running() and shutil.which("systemd-run") is not None and os.geteuid() == 0
 
 
 def unit_name(kind: str, ident: str) -> str:
@@ -103,8 +107,11 @@ def systemd_run_command(argv: list[str], *, name: str, description: str = "", en
 
 def spawn(argv: list[str], *, name: str, description: str = "", env: dict | None = None,
           cwd: str | os.PathLike | None = None, log_path: str | os.PathLike | None = None,
-          nice: int | None = None, timeout: float = 15) -> Spawned:
-    """Start `argv` detached (see the module docstring). Returns quickly; never raises."""
+          nice: int | None = None, timeout: float = 15, fallback: bool = True) -> Spawned:
+    """Start `argv` detached (see the module docstring). Returns quickly; never raises. With fallback=False
+    the setsid fallback is used only on a machine without systemd (or when ARCHI_DETACH=setsid asks for it):
+    where systemd runs, work that systemd-run cannot start is refused instead of being left in the caller's
+    cgroup, where a door restart would kill it."""
     m = mode()
     if m == "off":
         return Spawned(False, "off", error="detached processes are turned off here (ARCHI_DETACH=off)")
@@ -127,6 +134,11 @@ def spawn(argv: list[str], *, name: str, description: str = "", env: dict | None
             first_error = f"systemd-run failed: {e}"
         if m == "systemd":
             return Spawned(False, "systemd-run", error=first_error)
+    if m == "auto" and not fallback and systemd_running():
+        why = first_error or "systemd runs here, but systemd-run cannot be used (it is missing, or this is not root)"
+        return Spawned(False, "systemd-run", error=(
+            f"{why}. Not started: without a unit of its own it would sit in the caller's cgroup and die with the "
+            "next door restart. Fix systemd-run, or set ARCHI_DETACH=setsid to accept that."))
     res = _setsid(argv, env=env, cwd=cwd, log_path=log_path, nice=nice, timeout=timeout)
     if not res.ok and first_error:
         res.error = f"{first_error}; {res.error}"

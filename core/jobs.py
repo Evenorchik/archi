@@ -233,18 +233,23 @@ def job_env(base: dict | None = None) -> dict:
             if k not in DROP_ENV and not k.startswith("CLAUDE_CODE_") and not secret_env(k, v)}
 
 
+# The variables a door sets for one conversation (core/door.py turn_env of each door).
+CONVERSATION_VARS = ("ARCHI_DOOR", "ARCHI_CHAT_ID", "ARCHI_THREAD_ID", "ARCHI_ROOM_ID", "ARCHI_TOPIC_TITLE")
+
+
 def _conversation_env(conversation: str) -> dict:
-    """ARCHI_DOOR / ARCHI_CHAT_ID / ARCHI_THREAD_ID for a Telegram conversation launched from outside a turn."""
+    """What a door would set for this conversation: ARCHI_DOOR, and ARCHI_CHAT_ID / ARCHI_THREAD_ID (Telegram)
+    or ARCHI_ROOM_ID (Matrix), derived from the key."""
     env = {"ARCHI_CONVERSATION": conversation}
-    if conversation.startswith("tg:"):
-        try:
-            from .conversations import parse_key
-            _door, chat, thread = parse_key(conversation)
-            env.update(ARCHI_DOOR="telegram", ARCHI_CHAT_ID=str(chat), ARCHI_THREAD_ID="" if thread is None else str(thread))
-        except (ValueError, IndexError):
-            pass
-    elif conversation.startswith("mx:"):
-        env["ARCHI_DOOR"] = "matrix"
+    try:
+        from .conversations import parse_key
+        door, chat, thread = parse_key(conversation)
+    except (ValueError, IndexError):
+        return env
+    if door == "tg":
+        env.update(ARCHI_DOOR="telegram", ARCHI_CHAT_ID=str(chat), ARCHI_THREAD_ID="" if thread is None else str(thread))
+    elif door == "mx":
+        env.update(ARCHI_DOOR="matrix", ARCHI_ROOM_ID=str(chat))
     return env
 
 
@@ -294,7 +299,7 @@ def launch(kind: str, *, home: str | os.PathLike | None = None, conversation: st
     if env.get("ARCHI_CONVERSATION") != conversation:
         # Launched for another conversation than the current turn's (or outside a turn): the inherited chat
         # and topic would point at the wrong place.
-        for k in ("ARCHI_DOOR", "ARCHI_CHAT_ID", "ARCHI_THREAD_ID", "ARCHI_TOPIC_TITLE"):
+        for k in CONVERSATION_VARS:
             env.pop(k, None)
     env.update({k: v for k, v in _conversation_env(conversation).items() if k == "ARCHI_CONVERSATION" or k not in env})
     env.update({str(k): str(v) for k, v in (extra_env or {}).items()})
@@ -316,7 +321,7 @@ def launch(kind: str, *, home: str | os.PathLike | None = None, conversation: st
     # The unit description names the job, never its command: a command line can hold a password, and the
     # description is visible to every user of the machine and in the journal.
     res = detach.spawn(runner, name=unit, description=f"Archi job {job_id} ({kind})", env=runner_env,
-                       cwd=str(home), log_path=d / "runner.log")
+                       cwd=str(home), log_path=d / "runner.log", fallback=False)
     if not res.ok:
         _update(d, state="failed", ended_at=time.time(), error=f"could not start the job: {res.error}",
                 reported_at=time.time())
@@ -426,7 +431,10 @@ def _run_agent(d: Path, spec: dict, home: Path) -> dict:
     if effort not in engine.EFFORTS:
         effort = ""
     hard = float(spec.get("hard_s") or DEFAULT_LIMIT_S.get(kind, 4 * 3600))
-    limits = engine.Limits(silence_s=min(hard, engine.Limits().silence_s), hard_s=hard)
+    # A workflow's runner turn is silent for long stretches while the workflow's agents work (it only waits
+    # for the Workflow tool): a silence limit below the hard limit would stop healthy workflows.
+    silence = hard if kind == "workflow" else min(hard, engine.Limits().silence_s)
+    limits = engine.Limits(silence_s=silence, hard_s=hard)
     if kind == "workflow":
         prompt, system_prompt = spec.get("prompt") or "", ""
     else:

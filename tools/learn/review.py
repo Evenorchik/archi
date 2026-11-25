@@ -31,6 +31,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from core import learnlog, memory, notify  # noqa: E402
+from core.redact import redact  # noqa: E402
 from core.config import Config, home as default_home  # noqa: E402
 from core.prompt import _tz  # noqa: E402
 from tools.learn import digest, prompts, reviewer, stores  # noqa: E402
@@ -59,7 +60,9 @@ def reviewer_settings(cfg: dict, archi: Config) -> tuple[str, str, str]:
 
 
 def notice_text(lines: list[str], head: str = "🧠 **Session review**") -> str:
-    body = [f"· {x}" for x in lines[:NOTICE_LINES]]
+    """The notice: at most NOTICE_LINES lines of at most 300 characters, secrets removed (descriptions and
+    errors are text the reviewer wrote)."""
+    body = [f"· {redact(x)[:300]}" for x in lines[:NOTICE_LINES]]
     if len(lines) > NOTICE_LINES:
         body.append(f"· … and {len(lines) - NOTICE_LINES} more (archi learn status)")
     return "\n".join([head, *body])
@@ -114,6 +117,8 @@ def review_one(home: Path, key: str, *, kind: str = "combined", dry: bool = Fals
             dest = learnlog.learn_dir(home) / "proposals"
             for rel in proposals:
                 stores.copy_file(st.proposals / rel, dest / rel)
+        for rel in st.held:            # non-Markdown skill files: for the owner to look at, never live
+            stores.copy_file(st.root / "held" / rel, learnlog.learn_dir(home) / "proposals" / name / rel)
         learnlog.set_watermark(home, key, d["last_seq"], kind)
 
     skipped_memory = set((applied.get("memory") or {}).get("skipped") or [])
@@ -125,6 +130,10 @@ def review_one(home: Path, key: str, *, kind: str = "combined", dry: bool = Fals
     lines += [f"kept the live version of {x}: it changed while the review ran"
               for x in sorted(skipped_memory | set((applied.get("skills") or {}).get("skipped") or []))]
     lines += [f"skill proposal: state/learn/proposals/{p}" for p in proposals]
+    for skill in sorted({r.split("/")[0] for r in st.held}):
+        names = ", ".join(r.split("/", 1)[1] for r in st.held if r.split("/")[0] == skill)
+        lines.append(f"skill `{skill}`: not applied, only Markdown changes go live automatically: {names}"
+                     + ("" if dry else f" (waiting in state/learn/proposals/{name}/{skill}/)"))
     if problems:
         lines.insert(0, "⚠️ the memory changes failed validation and were not applied: " + "; ".join(problems[:3]))
 
@@ -132,7 +141,7 @@ def review_one(home: Path, key: str, *, kind: str = "combined", dry: bool = Fals
     if notify_owner and not dry and cfg.get("notify", True):
         text = ""
         if not res.ok:
-            text = f"🧠 **Session review** failed: {res.error[:300]}" if explicit else ""
+            text = f"🧠 **Session review** failed: {redact(res.error)[:300]}" if explicit else ""
         elif lines:
             text = notice_text(lines)
         elif explicit:
@@ -157,8 +166,8 @@ def run(home: Path | str | None = None, conversation: str | None = None, *, kind
         dry: bool = False, notify_owner: bool = True, explicit: bool = False, lock_wait: float = 1800) -> list[dict]:
     home = Path(home) if home else default_home()
     cfg = learnlog.load_config(home)
-    if not cfg.get("enabled", True) and not explicit and not dry:
-        return [{"skipped": "the learning loop is disabled"}]
+    if not cfg.get("enabled", True) and not dry:
+        return [{"skipped": "the learning loop is disabled" + (f" ({cfg['_broken']})" if cfg.get("_broken") else "")}]
     keys = [conversation] if conversation else [k for k in learnlog.conversations(home)
                                                 if learnlog.pending_turns(home, k, kind)]
     keys = [k for k in keys if not learnlog.excluded(cfg, k)]
@@ -169,6 +178,15 @@ def run(home: Path | str | None = None, conversation: str | None = None, *, kind
             return [{"conversation": conversation, "skipped": "another review is running"}]
         out = []
         for key in keys:
+            # Settings can change while a run waits for the lock (or for the run before this one): read
+            # them again, so a disable or an exclusion stops queued work too.
+            cfg = learnlog.load_config(home, create=False)
+            if not cfg.get("enabled", True) and not dry:
+                out.append({"conversation": key, "skipped": "the learning loop is disabled"})
+                continue
+            if learnlog.excluded(cfg, key):
+                out.append({"conversation": key, "skipped": "excluded from the learning loop"})
+                continue
             try:
                 out.append(review_one(home, key, kind=kind, dry=dry, notify_owner=notify_owner, explicit=explicit,
                                       cfg=cfg))

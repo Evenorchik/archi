@@ -182,8 +182,12 @@ polls `jobs.finished_unreported()` every 5 s and starts a report turn there with
 answer, step labels: provider-independent) and counts it; every 10 owner turns (memory) or 60 tool calls
 (skills) it starts `tools/learn/review.py` detached (transient unit, nice 10, one at a time). The review digests
 the turns since the conversation's watermark, backs up and stages the memory store and `skills/`, runs the
-reviewer CLI on the copies (claude: acceptEdits, only file tools, writes confined to the staged dirs; codex:
-`-s workspace-write` in the stage), validates (memory frontmatter, index, secrets; each skill against its own
-problems before the run, rolled back otherwise), applies three-way (live changes win), advances the watermark
-and posts a silent notice through `core/notify.py`. The weekly curator (`archi-learn-curator.timer`, installed
-by `archi learn enable`) consolidates memory the same way; its first run is a dry run reported to the owner.
+reviewer CLI on the copies (claude: acceptEdits, only file tools, writes confined to the staged dirs, no
+settings file of the host loaded; codex: `-s workspace-write` in the stage, no extra writable roots, no
+network; the digest is framed as untrusted data), validates (memory frontmatter, index, secrets; each skill against its own
+problems before the run, rolled back otherwise; only Markdown skill changes are applied, other files wait in
+`state/learn/proposals/`), applies three-way (live changes win; a memory file is removed only through the
+archive flow), advances the watermark and posts a silent, redacted notice through `core/notify.py`. The weekly curator (`archi-learn-curator.timer`, installed
+by `archi learn enable`) consolidates memory the same way; its first run is a dry run. It reports only counts
+and file names, and only into a conversation nobody but the owner reads (a Telegram private chat, a Matrix
+room of two).

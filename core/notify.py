@@ -15,6 +15,7 @@ import os
 
 from .config import Config
 from .conversations import parse_key
+from .redact import redact
 
 log = logging.getLogger("archi.notify")
 
@@ -23,6 +24,7 @@ def post(key: str, text: str, *, silent: bool = True, home: str | os.PathLike | 
     try:
         if not text or not text.strip():
             return False
+        text = redact(text)            # a notice never carries something that looks like a secret
         cfg = Config(home) if home else Config()
         if key.startswith("tg:"):
             return _telegram(cfg, key, text, silent)

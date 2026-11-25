@@ -98,3 +98,12 @@ def test_matrix_goes_through_the_optional_door(tmp_path, monkeypatch):
 
     mod.post = broken
     assert notify.post("mx:!room:example.org", "hello", home=tmp_path) is False
+
+
+
+def test_a_notice_never_carries_a_secret(tmp_path, bot_api):
+    Config(tmp_path).set("TELEGRAM_BOT_TOKEN", TOKEN)
+    leaked = "sk-" + "f" * 30
+    assert notify.post("tg:1001:77", f"saved: the key {leaked}", home=tmp_path) is True
+    body = bot_api.requests[-1][1]
+    assert leaked not in body["text"] and "[secret removed]" in body["text"]

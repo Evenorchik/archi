@@ -37,6 +37,9 @@ def cmd_status(args, cfg: Config) -> int:
     provider, model, effort = reviewer_settings(lc, cfg)
     mem = memory.memory_dir(home)
     facts = [f for f in mem.glob("*.md") if f.name != "MEMORY.md"] if mem.is_dir() else []
+    if lc.get("_broken"):
+        print(f"WARNING: {lc['_broken']}: the loop is paused until the file is fixed (nothing is logged or "
+              "reviewed meanwhile)")
     print(f"Self-learning loop: {'on' if lc.get('enabled', True) else 'OFF'} · notices "
           f"{'on' if lc.get('notify', True) else 'off'} · skills: {lc.get('skill_mode')}")
     print(f"  memory review every {lc.get('memory_every_turns')} owner turns · skill review every "
@@ -95,13 +98,23 @@ def cmd_curate(args, cfg: Config) -> int:
 
 
 def cmd_enable(args, cfg: Config) -> int:
-    learnlog.update_config(cfg.home, enabled=True)
+    try:
+        learnlog.update_config(cfg.home, enabled=True)
+    except ValueError as e:
+        print(f"not changed: {e}")
+        return 1
     print("self-learning loop: on (reviews start after 10 owner turns or 60 tool calls of a conversation)")
     return timers.install_curator(cfg.home)
 
 
 def cmd_disable(args, cfg: Config) -> int:
-    learnlog.update_config(cfg.home, enabled=False)
+    try:
+        learnlog.update_config(cfg.home, enabled=False)
+    except ValueError as e:
+        # The loop is already paused while its settings cannot be read; the timer goes anyway.
+        print(f"not changed: {e}")
+        timers.remove_curator()
+        return 1
     print("self-learning loop: off (no turns are logged or reviewed; `archi learn enable` turns it back on)")
     return timers.remove_curator()
 

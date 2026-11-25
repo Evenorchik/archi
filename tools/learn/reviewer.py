@@ -1,16 +1,19 @@
 """The reviewer: one sandboxed, non-interactive CLI run of the configured provider (claude or codex).
 
-claude: `claude -p --output-format json --no-session-persistence --permission-mode acceptEdits
-         --tools Read,Write,Edit,Glob,Grep --allowedTools Read,Glob,Grep --disallowedTools Bash,…
-         --strict-mcp-config --add-dir <staged store> …` with cwd = the stage directory (no MCP servers of
-        the host's configuration are started either). Only reading is pre-approved, anywhere;
+claude: `claude -p --output-format json --no-session-persistence --setting-sources "" --settings <pinned>
+         --permission-mode acceptEdits --tools Read,Write,Edit,Glob,Grep --allowedTools Read,Glob,Grep
+         --disallowedTools Bash,… --strict-mcp-config --add-dir <staged store> …` with cwd = the stage directory.
+        No settings file of the host (user, project, local) is loaded and no MCP server of its configuration
+        is started, so nothing there can widen these permissions. Only reading is pre-approved, anywhere;
         acceptEdits approves edits inside the working directories (the cwd and the --add-dir ones) and nowhere
         else, and in print mode nobody can approve anything more. No shell, web, sub-agents or skills. (The
         CLI also refuses writes under ~/.claude even when asked, which is one more reason the reviewer works
         on a staged copy of the memory store: the real one lives there.) The CLI's own auto-memory is
         switched off for the run (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1), so the staged store is the only one.
-codex:  `codex -a never exec -s workspace-write --skip-git-repo-check -C <stage> --json -`: its sandbox lets
-        it write only inside the stage directory (and the system temp directory), without network.
+codex:  `codex -a never -c sandbox_workspace_write.writable_roots=[] -c sandbox_workspace_write.network_access=false
+        exec -s workspace-write --skip-git-repo-check -C <stage> --json -`: its sandbox lets it write only
+        inside the stage directory (and the system temp directory), without network, whatever the host's
+        config.toml says.
 The prompt goes in on stdin. The answer is the reviewer's short summary.
 """
 from __future__ import annotations
@@ -31,8 +34,13 @@ from core import detach, engine  # noqa: E402
 CLAUDE_TOOLS = "Read,Write,Edit,Glob,Grep"
 CLAUDE_PREAPPROVED = "Read,Glob,Grep"
 CLAUDE_DENIED = "Bash,WebFetch,WebSearch,Agent,Task,Workflow,Skill,NotebookEdit,TaskStop,Monitor"
+# Only the flags given here decide the reviewer's permissions: an "allow Write" rule, a default mode or a hook
+# in a settings file of the host cannot widen them (no setting source is loaded; these settings are the only).
+CLAUDE_SETTINGS = json.dumps({"permissions": {"allow": [], "ask": [], "deny": []}, "disableAllHooks": True})
+# Codex: the host's config.toml must not add writable roots or network access to the workspace sandbox.
+CODEX_OVERRIDES = ("sandbox_workspace_write.writable_roots=[]", "sandbox_workspace_write.network_access=false")
 # Turn context the reviewer must not inherit: it is not a turn of any conversation.
-DROP_ENV = ("CLAUDECODE", "ARCHI_CONVERSATION", "ARCHI_CHAT_ID", "ARCHI_THREAD_ID", "ARCHI_DOOR",
+DROP_ENV = ("CLAUDECODE", "ARCHI_CONVERSATION", "ARCHI_CHAT_ID", "ARCHI_THREAD_ID", "ARCHI_ROOM_ID", "ARCHI_DOOR",
             "ARCHI_TOPIC_TITLE")
 
 
@@ -48,7 +56,7 @@ class Result:
 
 def claude_command(write_dirs: list[Path], *, model: str = "", effort: str = "") -> list[str]:
     cmd = [engine.resolve_binary("claude"), "-p", "--output-format", "json", "--no-session-persistence",
-           "--permission-mode", "acceptEdits", "--tools", CLAUDE_TOOLS, "--allowedTools", CLAUDE_PREAPPROVED,
+           "--setting-sources", "", "--settings", CLAUDE_SETTINGS, "--permission-mode", "acceptEdits", "--tools", CLAUDE_TOOLS, "--allowedTools", CLAUDE_PREAPPROVED,
            "--disallowedTools", CLAUDE_DENIED, "--strict-mcp-config"]
     if model:
         cmd += ["--model", model]
@@ -60,8 +68,10 @@ def claude_command(write_dirs: list[Path], *, model: str = "", effort: str = "")
 
 
 def codex_command(workdir: Path, *, model: str = "") -> list[str]:
-    cmd = [engine.resolve_binary("codex"), "-a", "never", "exec", "-s", "workspace-write",
-           "--skip-git-repo-check", "-C", str(workdir), "--json"]
+    cmd = [engine.resolve_binary("codex"), "-a", "never"]
+    for override in CODEX_OVERRIDES:
+        cmd += ["-c", override]
+    cmd += ["exec", "-s", "workspace-write", "--skip-git-repo-check", "-C", str(workdir), "--json"]
     if model:
         cmd += ["-m", model]
     return cmd + ["-"]

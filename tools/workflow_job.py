@@ -16,7 +16,8 @@ Notes:
 - `--args-file` is a JSON file with the workflow's `args`. They are baked into a copy of the script
   (`globalThis.args = …` right after `export const meta = {…}`) instead of going through the Workflow tool's
   `args` parameter: the nested model reliably passes that as a string, so `args.foo` came back undefined.
-  The copy sits next to the script at a stable path, so a resume re-wraps it identically.
+  The copy sits next to the script as <stem>.wfjob-<hash of the args>.js: other args get another file, the
+  same args the same path, so a resume re-wraps it identically.
 - `--resume <runId>` asks the Workflow tool to resume an interrupted run (finished agents replay from cache).
 - The nested turn waits for background work without the CLI's default ceiling
   (CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0): the ceiling used to cut long swarms off even inside a job.
@@ -24,7 +25,9 @@ Notes:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -58,6 +61,18 @@ def inject_args(script_text: str, args_json: str) -> str:
         j += 1
     # meta is a plain literal (no functions), so matching its braces is safe.
     return script_text[:j] + f"\nglobalThis.args = {args_json};\n" + script_text[j:]
+
+
+def args_copy(script: Path, wrapped: str, args_json: str) -> Path:
+    """Write the script with its args baked in next to it. One copy per distinct args: launches with other
+    args never share (or race on) a file, and the same args give the same path again, which keeps a resume
+    identical. Written atomically, so a concurrent launch with the same args reads a whole file."""
+    digest = hashlib.sha256(args_json.encode("utf-8")).hexdigest()[:12]
+    target = script.with_name(f"{script.stem}.wfjob-{digest}.js")
+    tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    tmp.write_text(wrapped, encoding="utf-8")
+    os.replace(tmp, target)
+    return target
 
 
 def build_prompt(script: str, resume: str | None) -> str:
@@ -98,9 +113,7 @@ def cmd_launch(a: argparse.Namespace) -> int:
         except ValueError as e:
             print(f"cannot inject args: {e}", file=sys.stderr)
             return 2
-        target = script.with_name(script.stem + ".wfjob-args.js")
-        target.write_text(wrapped, encoding="utf-8")
-        script = target
+        script = args_copy(script, wrapped, args_json)
     try:
         job = jobs.launch("workflow", prompt=build_prompt(str(script), a.resume),
                           label=a.label or f"workflow {Path(a.script).stem}", model=a.model or "",

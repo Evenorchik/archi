@@ -4,12 +4,18 @@
 It does what a plan says, then answers like the real CLI. FAKE_FLAVOR = claude | codex; FAKE_PLAN = path of a
 JSON list of operations; FAKE_REVIEW_MODE = ok | error | garbage | hang; FAKE_LOG = where every call is
 logged (argv, cwd, the prompt). Operations:
-  {"op": "write",   "store": "memory|skills|proposals|abs", "path": "rel/or/abs", "text": "..."}
+  {"op": "write",   "store": "memory|skills|proposals|root|abs", "path": "rel/or/abs", "text": "..."}
   {"op": "replace", "store": ..., "path": ..., "old": "...", "new": "..."}
   {"op": "delete",  "store": ..., "path": ...}
 A store is found the way the real CLI is confined: claude through its --add-dir directories (by name),
 codex inside its -C working root. "abs" writes an absolute path: it stands for the live agent changing a
-real store while the review runs.
+real store while the review runs, or (with FAKE_ENFORCE=1) for the reviewer trying to write outside.
+
+FAKE_ENFORCE=1 emulates the CLIs' write confinement: claude may write only under its cwd and --add-dir
+directories, unless host settings it loads allow Write (FAKE_HOST_SETTINGS = a settings.json; loaded when
+--setting-sources is absent or names "user"); codex only under -C, plus the writable roots of the host's
+config (FAKE_HOST_CODEX_ROOTS, ":"-separated) unless `-c sandbox_workspace_write.writable_roots=[]` is given.
+A refused write is logged as {"refused": path}.
 """
 import json
 import os
@@ -43,9 +49,37 @@ def store_dir(name: str) -> Path:
     raise SystemExit(f"fake reviewer: no writable {name} directory in {dirs}")
 
 
+def allowed(path: Path) -> bool:
+    if os.environ.get("FAKE_ENFORCE") != "1":
+        return True
+    path = path.resolve()
+    if flavor == "codex":
+        roots = [Path(argv[argv.index("-C") + 1])]
+        if "sandbox_workspace_write.writable_roots=[]" not in argv:
+            roots += [Path(r) for r in os.environ.get("FAKE_HOST_CODEX_ROOTS", "").split(":") if r]
+    else:
+        roots = [Path(os.getcwd())] + [Path(argv[i + 1]) for i, a in enumerate(argv) if a == "--add-dir"]
+        sources = argv[argv.index("--setting-sources") + 1] if "--setting-sources" in argv else "user,project,local"
+        host = os.environ.get("FAKE_HOST_SETTINGS")
+        if host and "user" in sources.split(","):
+            allow = json.loads(Path(host).read_text()).get("permissions", {}).get("allow", [])
+            if "Write" in allow:
+                return True                       # the host's settings widen the permissions
+    return any(path == r.resolve() or r.resolve() in path.parents for r in roots)
+
+
 plan = json.loads(Path(os.environ["FAKE_PLAN"]).read_text()) if os.environ.get("FAKE_PLAN") else []
 for op in plan:
-    path = Path(op["path"]) if op["store"] == "abs" else store_dir(op["store"]) / op["path"]
+    if op["store"] == "abs":
+        path = Path(op["path"])
+    elif op["store"] == "root":                      # relative to the reviewer's working directory
+        path = Path(os.getcwd()) / op["path"]
+    else:
+        path = store_dir(op["store"]) / op["path"]
+    if op["store"] in ("abs", "root") and not allowed(path):
+        with open(os.environ.get("FAKE_LOG", "/dev/null"), "a") as fh:
+            fh.write(json.dumps({"refused": str(path)}) + "\n")
+        continue
     if op["op"] == "write":
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(op["text"])

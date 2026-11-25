@@ -127,23 +127,30 @@ def review_lock(home: str | os.PathLike, wait_s: float = 0, poll: float = 2.0):
 # ---------------------------------------------------------------------------------------------- config
 
 def load_config(home: str | os.PathLike, *, create: bool = True) -> dict:
-    """The settings merged over the defaults. A missing file is created with the defaults; a broken one is
-    left alone (the owner may be editing it) and the defaults are used."""
+    """The settings merged over the defaults. A missing file is created with the defaults. A broken one is
+    left alone (the owner may be editing it) and the loop FAILS CLOSED until it is fixed: its exclusions and
+    its off switch cannot be read, so nothing is logged or reviewed (`_broken` says why)."""
     path = learn_dir(home) / "config.json"
     raw = None
+    broken = ""
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            broken = f"{path} does not hold a JSON object"
     except FileNotFoundError:
         if create:
             try:
                 jsave(path, {**DEFAULT_CONFIG}, mode=0o644)
             except OSError:
                 pass
-    except (OSError, ValueError):
-        pass
+    except (OSError, ValueError) as e:
+        broken = f"{path} cannot be read as JSON ({e})"
     cfg = dict(DEFAULT_CONFIG)
     if isinstance(raw, dict):
         cfg.update(raw)
+    if broken:
+        cfg["enabled"] = False
+        cfg["_broken"] = broken
     if cfg.get("skill_mode") not in SKILL_MODES:
         cfg["skill_mode"] = DEFAULT_CONFIG["skill_mode"]
     if not isinstance(cfg.get("exclude_conversations"), list):
@@ -152,12 +159,25 @@ def load_config(home: str | os.PathLike, *, create: bool = True) -> dict:
 
 
 def update_config(home: str | os.PathLike, **changes) -> dict:
-    """Change keys of config.json, keeping everything else in it (unknown keys included)."""
+    """Change keys of config.json, keeping everything else in it (unknown keys included). A file that cannot
+    be parsed is never overwritten (that would silently drop its settings, the exclusions among them):
+    ValueError, and the file stays as it is."""
     path = learn_dir(home) / "config.json"
     with locked(home):
-        raw = jload(path, {})
-        if not raw:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            text = None
+        if text is None:
             raw = dict(DEFAULT_CONFIG)
+        else:
+            try:
+                raw = json.loads(text)
+            except ValueError as e:
+                raise ValueError(f"{path} is not valid JSON ({e}); nothing was changed: fix the file (or move "
+                                 "it away to start from the defaults) and run the command again") from None
+            if not isinstance(raw, dict):
+                raise ValueError(f"{path} does not hold a JSON object; nothing was changed")
         raw.update(changes)
         jsave(path, raw, mode=0o644)
     return load_config(home)
@@ -175,6 +195,15 @@ def excluded(cfg: dict, key: str) -> bool:
 
 
 # ---------------------------------------------------------------------------------------------- turn log
+
+def split_lines(text: str) -> list[str]:
+    """Lines of a JSONL file: split on "\n" only. str.splitlines() also splits on U+2028, U+2029 and U+0085,
+    which json.dumps(ensure_ascii=False) leaves raw inside strings, and the turn would be lost."""
+    lines = (text or "").split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return [x[:-1] if x.endswith("\r") else x for x in lines]
+
 
 def log_name(key: str) -> str:
     """File name of a conversation's log: readable, and unique even for keys that differ only in characters
@@ -214,7 +243,7 @@ def _last_seq(path: Path) -> int:
                 fh.seek(0, os.SEEK_END)
                 size = fh.tell()
                 fh.seek(max(0, size - window))
-                lines = fh.read().decode("utf-8", "replace").splitlines()
+                lines = split_lines(fh.read().decode("utf-8", "replace"))
         except OSError:
             return 0
         if size > window:
@@ -257,7 +286,7 @@ def trim(path: Path, max_turns: int | None = None, keep: int | None = None, max_
     keep = KEEP_LOG_TURNS if keep is None else keep
     max_bytes = MAX_LOG_BYTES if max_bytes is None else max_bytes
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+        lines = [x + "\n" for x in split_lines(path.read_text(encoding="utf-8", errors="replace"))]
     except OSError:
         return False
     size = sum(len(x.encode("utf-8")) for x in lines)
@@ -283,7 +312,7 @@ def read_turns(home: str | os.PathLike, key: str, after_seq: int = 0) -> list[di
         text = log_path(home, key).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return out
-    for line in text.splitlines():
+    for line in split_lines(text):
         try:
             entry = json.loads(line)
         except ValueError:
@@ -378,13 +407,34 @@ def conversations(home) -> list[str]:
     return sorted(keys)
 
 
-def most_recent_conversation(home, cfg: dict | None = None) -> str | None:
-    """The conversation the owner used last (not excluded): where reports without their own conversation
-    go."""
+def is_private(home, key: str) -> bool:
+    """True for a conversation only the owner and the agent are in: a Telegram private chat (positive chat
+    id), a Matrix room the door counted as two members (kind "dm"). Unknown means no."""
+    try:
+        from .conversations import Registry, parse_key
+        conv = Registry(Path(home) / "state").get(key)
+        door, chat, _thread = parse_key(key)
+    except Exception:  # noqa: BLE001 - an unreadable registry or key is simply not private
+        return False
+    if conv is None or conv.state == "deleted" or conv.kind != "dm":
+        return False
+    if door == "tg":
+        try:
+            return int(chat) > 0
+        except ValueError:
+            return False
+    return door == "mx"
+
+
+def most_recent_conversation(home, cfg: dict | None = None, *, private_only: bool = False) -> str | None:
+    """The conversation the owner used last (not excluded; with `private_only`, only one nobody else reads):
+    where reports without a conversation of their own go."""
     cfg = cfg or load_config(home, create=False)
     best, best_t = None, -1.0
     for key, st in load_counters(home).items():
         if excluded(cfg, key) or not isinstance(st, dict):
+            continue
+        if private_only and not is_private(home, key):
             continue
         t = float(st.get("last_owner_turn_at") or st.get("last_turn_at") or 0)
         if t > best_t:

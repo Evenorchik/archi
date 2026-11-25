@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import secrets
 import shutil
 import sys
@@ -25,10 +26,10 @@ if __package__ in (None, ""):
 
 from core import learnlog, memory, notify  # noqa: E402
 from core.config import Config, home as default_home  # noqa: E402
+from core.redact import redact  # noqa: E402
 from tools.learn import prompts, reviewer, stores  # noqa: E402
 from tools.learn.review import reviewer_settings  # noqa: E402
 
-REPORT_CHARS = 3000
 
 
 def state_path(home: Path) -> Path:
@@ -48,6 +49,9 @@ def run(home: Path | str | None = None, *, dry: bool = False, notify_owner: bool
     with learnlog.review_lock(home, wait_s=lock_wait) as got:
         if not got:
             return {"type": "curator", "skipped": "a review is running"}
+        cfg = learnlog.load_config(home, create=False)     # it may have been turned off while this waited
+        if not cfg.get("enabled", True):
+            return {"type": "curator", "skipped": "the learning loop is disabled"}
         return _run(home, cfg, real, dry=dry, notify_owner=notify_owner)
 
 
@@ -71,11 +75,13 @@ def _run(home: Path, cfg: dict, real: Path, *, dry: bool, notify_owner: bool) ->
     fixes = [] if problems else stores.repair_index(st.memory) + stores.finalize_archives(st.memory, st.base / "memory")
     lines = restored + ([] if problems else [line for _, line in stores.describe_memory(st)])
     applied = {}
+    changes: list[tuple[str, str]] = []
     if res.ok and not dry and not problems:
         applied = stores.apply_memory(st, real)
         skipped = set(applied.get("skipped") or [])
         lines = restored + [line for rel, line in stores.describe_memory(st) if rel not in skipped]
         lines += [f"kept the live version of {x}: it changed while the curator ran" for x in sorted(skipped)]
+        changes = [(line.split(":", 1)[0], rel) for rel, line in stores.describe_memory(st) if rel not in skipped]
 
     if res.ok:
         state["runs"] = int(state.get("runs") or 0) + (0 if dry else 1)
@@ -83,23 +89,16 @@ def _run(home: Path, cfg: dict, real: Path, *, dry: bool, notify_owner: bool) ->
         state["last_run"], state["last_dry"] = name, dry
         learnlog.jsave(state_path(home), state, mode=0o644)
 
-    where = learnlog.most_recent_conversation(home, cfg)
+    # The report goes only to a conversation nobody but the owner reads, and only as counts and file
+    # names: the curator read the whole store, and its own text is not something to forward.
+    where = learnlog.most_recent_conversation(home, cfg, private_only=True)
     notified = False
-    if notify_owner and where and cfg.get("notify", True):
-        if not res.ok:
-            text = f"🧹 **Memory curator** failed: {res.error[:300]}"
-        elif problems:
-            text = ("🧹 **Memory curator**: its changes failed validation, the memory is unchanged: "
-                    + "; ".join(problems[:3]))
-        elif dry:
-            text = ("🧹 **Memory curator** · dry run, nothing was changed"
-                    + (" (the first run is always a dry run; the next weekly run applies its changes)" if first else "")
-                    + "\n\n" + (report[:REPORT_CHARS] or "No report."))
+    if notify_owner and cfg.get("notify", True):
+        text = owner_summary(name, res, problems, dry, first, report, st, changes)
+        if where:
+            notified = notify.post(where, text, silent=True, home=home)
         else:
-            text = "\n".join(["🧹 **Memory curator** · weekly pass",
-                              *[f"· {x}" for x in (lines[:10] or ["no changes"])],
-                              *(["", report[:1500]] if report else [])])
-        notified = notify.post(where, text, silent=True, home=home)
+            print("curator: no private conversation with the owner is known, so the report was not posted")
 
     record = {"name": name, "type": "curator", "dry_run": dry, "first_run": first, "provider": provider,
               "model": model or "CLI default", "ok": res.ok, "error": res.error, "seconds": round(res.seconds),
@@ -112,6 +111,35 @@ def _run(home: Path, cfg: dict, real: Path, *, dry: bool, notify_owner: bool) ->
     return record
 
 
+def owner_summary(name: str, res, problems: list[str], dry: bool, first: bool, report: str, st,
+                  changes: list[tuple[str, str]]) -> str:
+    """What the owner is told: counts and memory file names, bounded and with secrets removed; the full
+    report stays in state/learn/runs/<name>.json."""
+    where = f"Details: `archi learn status` (state/learn/runs/{name}.json)."
+    if not res.ok:
+        text = f"🧹 **Memory curator** failed: {redact(res.error)[:160]}. {where}"
+    elif problems:
+        text = (f"🧹 **Memory curator**: its result failed validation ({len(problems)} problem(s)), so the memory "
+                f"is unchanged. {where}")
+    elif dry:
+        known = sorted(set(st.base_memory) - {stores.INDEX})
+        named = sorted({m for m in re.findall(r"[A-Za-z0-9_.-]+\.md", report) if m in known})
+        text = ("🧹 **Memory curator** · dry run, nothing was changed"
+                + (" (the first run always is; the next weekly run applies its changes)" if first else "")
+                + f". Its report concerns {len(named)} of {len(known)} memory files"
+                + (": " + ", ".join(named[:15]) + (" …" if len(named) > 15 else "") if named else "")
+                + f". {where}")
+    else:
+        counts: dict[str, int] = {}
+        for verb, _rel in changes:
+            counts[verb] = counts.get(verb, 0) + 1
+        head = ", ".join(f"{n} {verb}" for verb, n in sorted(counts.items())) or "no changes"
+        text = "\n".join([f"🧹 **Memory curator** · weekly pass: {head}",
+                          *[f"· {verb}: {rel}" for verb, rel in changes[:10]],
+                          *([f"· … and {len(changes) - 10} more"] if len(changes) > 10 else []), where])
+    return redact(text)[:1500]
+
+
 def summary(rec: dict) -> str:
     if rec.get("skipped"):
         return f"curator: skipped ({rec['skipped']})"
@@ -121,7 +149,7 @@ def summary(rec: dict) -> str:
     if rec.get("problems"):
         out.append("  not applied, validation failed: " + "; ".join(rec["problems"][:5]))
     if rec.get("report"):
-        out += ["", rec["report"]]
+        out += ["", redact(rec["report"])]
     return "\n".join(out)
 
 

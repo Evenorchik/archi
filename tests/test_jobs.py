@@ -239,12 +239,13 @@ def test_workflow_job_bakes_its_args_into_the_script(jhome, fake_cli, tmp_path):
     assert workflow_job.main(["launch", "--script", str(script), "--args-file", str(tmp_path / "args.json"),
                               "--label", "wf"]) == 0
     [job] = jobs.list_jobs(jhome)
-    wrapped = (tmp_path / "wf.wfjob-args.js").read_text()
+    [copy] = sorted(tmp_path.glob("wf.wfjob-*.js"))
+    wrapped = copy.read_text()
     assert wrapped.index('globalThis.args = {"who": "owner"};') > wrapped.index("nested: { a: 1 } };")
     spec = json.loads((Path(job["dir"]) / "spec.json").read_text())
     assert spec["kind"] == "workflow" and spec["provider"] == "claude"
     assert spec["env"]["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] == "0"
-    assert f"scriptPath = {tmp_path / 'wf.wfjob-args.js'}" in spec["prompt"]
+    assert f"scriptPath = {copy}" in spec["prompt"]
     assert wait_state(job["id"], jhome, timeout=30)["state"] == "done"
     call = [json.loads(x) for x in fake_cli.read_text().splitlines()][-1]
     assert "--append-system-prompt" not in call["argv"] and "Workflow" in call["argv"][call["argv"].index("--allowedTools") + 1]
@@ -331,3 +332,72 @@ def test_systemd_run_command(monkeypatch):
     for part in ("Nice=10", "ARCHI_HOME=/opt/archi", "StandardOutput=append:/opt/archi/state/jobs/X/runner.log"):
         assert part in cmd
     assert cmd[cmd.index("--working-directory") + 1] == "/opt/archi"
+
+
+
+# ------------------------------------------------------------------ second review round
+def test_a_job_for_another_conversation_gets_that_conversations_variables(jhome, monkeypatch):
+    monkeypatch.setenv("ARCHI_CONVERSATION", "mx:!here:example.org")    # launched from a Matrix room …
+    monkeypatch.setenv("ARCHI_ROOM_ID", "!here:example.org")
+    monkeypatch.setenv("ARCHI_DOOR", "matrix")
+    job = jobs.launch("run", shell="echo room=$ARCHI_ROOM_ID chat=$ARCHI_CHAT_ID door=$ARCHI_DOOR",
+                      conversation="tg:42:7")                            # … for a Telegram topic
+    out = Path(wait_state(job["id"], jhome)["output_path"]).read_text()
+    assert "room= chat=42 door=telegram" in out
+    job = jobs.launch("run", shell="echo room=$ARCHI_ROOM_ID door=$ARCHI_DOOR", conversation="mx:!there:example.org")
+    assert "room=!there:example.org door=matrix" in Path(wait_state(job["id"], jhome)["output_path"]).read_text()
+
+
+def test_jobs_refuse_a_fallback_that_a_door_restart_would_kill(jhome, monkeypatch, tmp_path):
+    monkeypatch.setenv("ARCHI_DETACH", "auto")
+    monkeypatch.setattr(detach, "systemd_running", lambda: True)
+    monkeypatch.setattr(detach, "systemd_usable", lambda: True)
+    real_run = subprocess.run
+    monkeypatch.setattr(detach.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(
+        cmd, 1, "", "Failed to connect to bus") if cmd[0] == "systemd-run" else real_run(cmd, **kw))
+    with pytest.raises(jobs.JobError, match="Not started.*ARCHI_DETACH=setsid"):
+        jobs.launch("run", shell="true")
+    [job] = jobs.list_jobs(jhome)
+    assert job["state"] == "failed" and job.get("reported_at")      # the caller was told; no later report
+    # Reviews are cheap to lose: they still start, with a warning.
+    marker = tmp_path / "ran"
+    res = detach.spawn([sys.executable, "-c", f"open({str(marker)!r}, 'w').write('x')"], name="r",
+                       env={"PATH": os.environ["PATH"]})
+    assert res.ok and res.via == "setsid" and "Failed to connect to bus" in res.warning
+    wait_for(marker.exists, what="the fallback process")
+    # Without systemd at all the fallback is all there is, for jobs too.
+    monkeypatch.setattr(detach, "systemd_running", lambda: False)
+    monkeypatch.setattr(detach, "systemd_usable", lambda: False)
+    assert wait_state(jobs.launch("run", shell="true")["id"], jhome)["state"] == "done"
+
+
+def test_workflow_jobs_wait_through_long_silences(jhome, monkeypatch):
+    seen = {}
+
+    async def fake_run_turn(provider, prompt, session_id, **kw):
+        seen[kw["system_prompt"] == ""] = kw["limits"]
+        from core.engine import TurnResult
+        return TurnResult("ok", "s1", True)
+
+    monkeypatch.setattr("core.engine.run_turn", fake_run_turn)
+    d = jobs.jobs_dir(jhome) / "x"
+    d.mkdir(parents=True)
+    (d / "status.json").write_text("{}")
+    for kind in ("workflow", "agent"):
+        spec = {"id": "x", "kind": kind, "label": "l", "conversation": CONV, "prompt": "p", "provider": "claude",
+                "hard_s": 7 * 3600, "cwd": str(jhome)}
+        assert jobs._run_agent(d, spec, jhome)["state"] == "done"
+    assert seen[True].silence_s == seen[True].hard_s == 7 * 3600          # workflow: silence is fine
+    assert seen[False].silence_s < seen[False].hard_s                       # agent: the usual silence limit
+
+
+def test_workflow_args_copies_are_per_args(tmp_path):
+    from tools import workflow_job
+    script = tmp_path / "wf.js"
+    script.write_text("export const meta = { name: 'x' };\n")
+    a1, a2 = json.dumps({"who": "a"}), json.dumps({"who": "b"})
+    p1 = workflow_job.args_copy(script, workflow_job.inject_args(script.read_text(), a1), a1)
+    p2 = workflow_job.args_copy(script, workflow_job.inject_args(script.read_text(), a2), a2)
+    again = workflow_job.args_copy(script, workflow_job.inject_args(script.read_text(), a1), a1)
+    assert p1 != p2 and p1 == again and '"who": "a"' in p1.read_text() and '"who": "b"' in p2.read_text()
+    assert not list(tmp_path.glob(".*.tmp"))

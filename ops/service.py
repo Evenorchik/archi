@@ -147,13 +147,19 @@ def install_unit(door: str = "telegram", *, start: bool = True, home: Path | str
         print(f"{unit_name(door)}: installed{' (updated)' if changed else ''}, enabled")
         return 0
     was_active = unit_state(door).get("ActiveState") == "active"
-    if was_active and not changed:
-        # Already running this unit (an installer re-run): restart only when that kills no turn.
+    if was_active:
+        # A restart kills every running turn of the door. Same policy as `archi restart`: from inside a turn
+        # it is handed to a transient unit that waits until the door is idle (this turn included); otherwise
+        # it waits for idle a while and, when turns are still busy, leaves the restart for later.
+        what = "updated and running" if changed else "running"
+        if in_turn():
+            print(f"{unit_name(door)}: {what}; the restart waits until no turn is running")
+            return detach_restart(delay=IN_TURN_MIN_DELAY_S, max_wait=None, home=Path(home or Config().home))
         if not wait_idle(home, max_wait=120, out=print):
-            print(f"{unit_name(door)}: running; turns are busy, so it was not restarted (later: archi restart "
-                  "--when-idle)")
+            print(f"{unit_name(door)}: {what}; turns are busy, so it was not restarted"
+                  + (" and still runs the old unit" if changed else "") + " (later: archi restart --when-idle)")
             return 0
-    res = systemctl("restart" if (changed or was_active) else "start", unit_name(door))
+    res = systemctl("restart" if was_active else "start", unit_name(door))
     if res.returncode != 0:
         print(f"{unit_name(door)}: start failed: {res.stderr.strip()}", file=sys.stderr)
         return 1

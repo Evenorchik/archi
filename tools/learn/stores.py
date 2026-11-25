@@ -145,6 +145,7 @@ class Stage:
     base_skills: dict = field(default_factory=dict)
     memory_baseline: dict = field(default_factory=dict)
     skill_baseline: dict = field(default_factory=dict)
+    held: list = field(default_factory=list)   # non-Markdown skill files held back (staged copies in root/held/)
 
     def write_dirs(self) -> list[Path]:
         return [p for p in (self.memory, self.skills, self.proposals) if p is not None]
@@ -228,7 +229,7 @@ def repair_index(mem: Path) -> list[str]:
     """Make MEMORY.md list every live fact once and nothing else: drop lines of missing, archived or
     duplicated files, add a line for a live file that has none."""
     idx = mem / INDEX
-    lines = read(idx).splitlines() if idx.exists() else []
+    lines = learnlog.split_lines(read(idx)) if idx.exists() else []
     live: dict[str, dict] = {}
     for f in sorted(mem.glob("*.md")):
         if f.name == INDEX:
@@ -328,7 +329,7 @@ def describe_memory(st: Stage) -> list[tuple[str, str]]:
 def merge_index(base: str, ours: str, theirs: str) -> str:
     """Three-way merge of MEMORY.md: the live index (theirs) plus the lines the review added, minus the lines
     it removed. A line the review rewrote keeps its place."""
-    b, o, t = base.splitlines(), ours.splitlines(), theirs.splitlines()
+    b, o, t = learnlog.split_lines(base), learnlog.split_lines(ours), learnlog.split_lines(theirs)
     removed = {ln for ln in b if ln not in set(o)}
     added = [ln for ln in o if ln not in set(b)]
     by_target = {}
@@ -351,31 +352,36 @@ def merge_index(base: str, ours: str, theirs: str) -> str:
     return ("\n".join(out).rstrip() + "\n") if out else ""
 
 
+def _live_sha(path: Path) -> str | None:
+    try:   # read right before acting on the file: the live agent may write at any moment
+        return sha(path) if path.is_file() else None
+    except OSError:
+        return "unreadable"
+
+
 def apply_memory(st: Stage, real: Path) -> dict:
-    """Copy what the review changed into the real store (three-way, see the module docstring)."""
+    """Copy what the review changed into the real store (three-way, see the module docstring). A real memory
+    file is removed only through the archive flow: when its exact text is in the real .archive/ (copies are
+    applied first), never because a staged file is merely missing."""
     after = snapshot(st.memory, md_only=True)
     applied, skipped, removed = [], [], []
-    for rel in sorted(set(after) | set(st.base_memory)):
-        if rel == INDEX:
-            continue
-        a, b = after.get(rel), st.base_memory.get(rel)
-        if a == b:
-            continue
-        target = real / rel
-        try:   # the live file, checked right before acting on it: the live agent may write at any moment
-            r = sha(target) if target.is_file() else None
-        except OSError:
-            r = "unreadable"
-        if r != b:
+    changed = [rel for rel in sorted(set(after) | set(st.base_memory))
+               if rel != INDEX and after.get(rel) != st.base_memory.get(rel)]
+    for rel in [r for r in changed if after.get(r) is not None]:
+        if _live_sha(real / rel) != st.base_memory.get(rel):
             skipped.append(rel)        # the live agent changed it meanwhile: its version stays
             continue
-        if a is None:
-            (real / rel).unlink(missing_ok=True)
-            removed.append(rel)
-        else:
-            real.mkdir(parents=True, exist_ok=True)
-            copy_file(st.memory / rel, real / rel)
-            applied.append(rel)
+        real.mkdir(parents=True, exist_ok=True)
+        copy_file(st.memory / rel, real / rel)
+        applied.append(rel)
+    archived = {sha(f) for f in (real / ARCHIVE).glob("*.md")} if (real / ARCHIVE).is_dir() else set()
+    for rel in [r for r in changed if after.get(r) is None]:
+        b = st.base_memory.get(rel)
+        if rel.startswith(ARCHIVE + "/") or b not in archived or _live_sha(real / rel) != b:
+            skipped.append(rel)        # not provably archived, or changed meanwhile: it stays
+            continue
+        (real / rel).unlink(missing_ok=True)
+        removed.append(rel)
     fixes = []
     base_idx, ours = read(st.base / "memory" / INDEX), read(st.memory / INDEX)
     if applied or removed or ours != base_idx:
@@ -454,6 +460,21 @@ def settle_skills(st: Stage, big_lines: int = 40) -> tuple[list[tuple[str, str]]
             _restore(st, name)
             rolled.append(f"skill `{name}`: the edit looked like it contained a secret, rolled back")
             continue
+        # The digest is untrusted text: a script or config written from it must never go live by itself.
+        # Only Markdown is applied; other files wait in held/ for the owner.
+        held = [r for r in files if not r.endswith(".md") and r in after]
+        for r in held:
+            copy_file(st.skills / r, st.root / "held" / r)
+            old = st.base / "skills" / r
+            if old.is_file():
+                copy_file(old, st.skills / r)
+            else:
+                (st.skills / r).unlink()
+        if held:
+            st.held += held
+            files = [r for r in files if r not in held]
+            if not files:
+                continue
         n = sum(changed_lines(st.base / "skills" / r, st.skills / r) for r in files)
         what = "new skill" if not existed else f"{n} line{'s' if n != 1 else ''} changed"
         if len(files) > 1:
