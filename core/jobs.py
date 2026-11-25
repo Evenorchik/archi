@@ -11,6 +11,9 @@ CONTRACT (doors call these; keep the signatures):
       The prompt of the turn that reports the job, in the conversation that launched it.
   mark_reported(job_id, home=) -> None
       Called by the door after the report turn was started, so a job is reported once.
+  status_lines(home=, conversation=None) -> list[str]
+      Short human lines for the /jobs command (recent jobs, newest first; running ones marked); with
+      `conversation` only the jobs launched from that conversation. [] when there are none.
 
 Until durable jobs are installed these are no-ops.
 """
@@ -29,3 +32,7 @@ def report_prompt(job: dict) -> str:
 
 def mark_reported(job_id: str, home: str | os.PathLike | None = None) -> None:
     return None
+
+
+def status_lines(home: str | os.PathLike | None = None, conversation: str | None = None) -> list[str]:
+    return []
