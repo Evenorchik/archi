@@ -67,7 +67,7 @@ def _run(home: Path, cfg: dict, real: Path, *, dry: bool, notify_owner: bool) ->
     report = (res.text or "").strip()
 
     problems = stores.memory_problems(st)
-    fixes = [] if problems else stores.repair_index(st.memory) + stores.finalize_archives(st.memory)
+    fixes = [] if problems else stores.repair_index(st.memory) + stores.finalize_archives(st.memory, st.base / "memory")
     lines = [] if problems else [line for _, line in stores.describe_memory(st)]
     applied = {}
     if res.ok and not dry and not problems:

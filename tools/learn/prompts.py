@@ -98,7 +98,10 @@ Hard rules:
   • Small, surgical edits. Never rewrite a whole skill, never delete or rename a skill or its files, never
     touch `.history/`. Keep the frontmatter intact.
   • A preference lesson lives in ONE place: the governing skill when one exists, memory (type feedback) only
-    for cross-cutting preferences no skill owns; never both.
+    for cross-cutting preferences no skill owns; never both. Earlier memory reviews often saved such a lesson
+    as a memory fact: when you put it into the skill, ARCHIVE that fact. Overwrite its file with nothing but a
+    frontmatter stub (`name`, `description`, `archived: true`) and remove its line from {memory_dir}/MEMORY.md;
+    its previous text is kept in .archive/ automatically.
 """
 
 SKILL_PROPOSALS = """SKILLS live in {skills_dir}/<name>/SKILL.md (list below). You may NOT edit them. When the session shows a
@@ -139,10 +142,9 @@ Glob, Grep, Write and Edit; writes outside {memory_dir}/ are refused. You cannot
 
 {rules}
 Hard rules:
-1. Never delete. The most destructive action is ARCHIVING: Write a copy of the file to
-   {memory_dir}/.archive/<same-name>.md, remove its line from MEMORY.md, then overwrite the original file
-   with nothing but a frontmatter stub (`archived: true` plus its name and description); the stub is removed
-   automatically once the archive copy exists.
+1. Never delete. The most destructive action is ARCHIVING: overwrite the file with nothing but a frontmatter
+   stub (`name`, `description`, `archived: true`) and remove its line from MEMORY.md. Its previous text is
+   kept in {memory_dir}/.archive/ automatically and the stub is cleaned up.
 2. Merge duplicates into ONE file (the clearer one): keep its name, fold in any unique detail, archive the other.
 3. Contradictions: keep the newer, better-evidenced fact. If you cannot tell, keep both and list the conflict
    in your report for the owner; do not guess.
@@ -180,7 +182,7 @@ def review_prompt(kind: str, digest: str, *, agent: str, conversation: str, memo
                      "cross-cutting preference that no skill owns, in its usual one-fact-per-file format.\n")
     if with_skills:
         rules = SKILL_EDIT if skill_mode == "auto" else SKILL_PROPOSALS
-        parts.append("## Skills\n" + LESSON_LAYER + "\n" + rules.format(skills_dir=skills_dir,
+        parts.append("## Skills\n" + LESSON_LAYER + "\n" + rules.format(skills_dir=skills_dir, memory_dir=memory_dir,
                                                                        proposals_dir=proposals_dir))
     parts.append(DO_NOT_CAPTURE)
     parts.append("## Current MEMORY.md index\n" + (memory_index.strip() or "(empty)"))

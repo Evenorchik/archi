@@ -253,12 +253,20 @@ def repair_index(mem: Path) -> list[str]:
     return fixes
 
 
-def finalize_archives(mem: Path) -> list[str]:
-    """Archiving = a copy in .archive/ plus an `archived: true` stub (the reviewer cannot delete files). Once
-    the copy really exists, the stub goes."""
+def finalize_archives(mem: Path, base: Path | None = None) -> list[str]:
+    """Archiving = an `archived: true` stub in place of the fact (the reviewer cannot delete files) plus a copy
+    of the fact in .archive/. When the reviewer wrote only the stub, the copy is made from the fact as it was
+    before the run (`base`). Once the copy exists, the stub goes: nothing is lost, the live store is lean."""
     done = []
     for f in sorted(mem.glob("*.md")):
-        if f.name != INDEX and is_archived(frontmatter(read(f))) and (mem / ARCHIVE / f.name).is_file():
+        if f.name == INDEX or not is_archived(frontmatter(read(f))):
+            continue
+        copy = mem / ARCHIVE / f.name
+        old = Path(base) / f.name if base else None
+        if not copy.is_file() and old is not None and old.is_file() and not is_archived(frontmatter(read(old))):
+            copy.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(old, copy)
+        if copy.is_file():
             f.unlink()
             done.append(f"archived {f.name}")
     return done

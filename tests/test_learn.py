@@ -335,6 +335,35 @@ def test_live_changes_during_a_review_win(env):
     assert "kept the live version of owner-timezone.md: it changed while the review ran" in rec["lines"]
 
 
+def test_a_skill_review_sees_turns_a_memory_review_consumed_and_moves_the_lesson(env):
+    turns(env.home, 3, prompt="when you check a text I wrote, keep my wording")
+    lesson = NEW_FACT.replace("owner-deploy-day", "keep-owner-wording").replace(
+        "The owner deploys on Fridays", "The owner wants their own wording kept")
+    env.plan([{"op": "write", "store": "memory", "path": "keep-owner-wording.md", "text": lesson}])
+    [rec] = review.run(env.home, KEY, kind="memory")
+    assert rec["ok"] and (env.mem / "keep-owner-wording.md").exists()
+    assert (learnlog.watermark(env.home, KEY, "memory"), learnlog.watermark(env.home, KEY, "skill")) == (3, 0)
+    assert learnlog.pending_turns(env.home, KEY, "memory") == [] and len(learnlog.pending_turns(env.home, KEY, "skill")) == 3
+    # The skill review puts the lesson into the skill and retires the memory fact with a stub only.
+    env.plan([
+        {"op": "replace", "store": "skills", "path": "writing-style/SKILL.md", "old": "2. Keep it short.",
+         "new": "2. Keep it short.\n3. On the owner's own text change only what the checker flags."},
+        {"op": "write", "store": "memory", "path": "keep-owner-wording.md",
+         "text": "---\nname: keep-owner-wording\ndescription: moved into the writing-style skill\narchived: true\n---\n"},
+    ])
+    [rec] = review.run(env.home, KEY, kind="skill")
+    assert rec["ok"] and rec["turns"] == 3
+    assert "change only what the checker flags" in (env.skills / "writing-style" / "SKILL.md").read_text()
+    assert not (env.mem / "keep-owner-wording.md").exists()
+    assert (env.mem / ".archive" / "keep-owner-wording.md").read_text() == lesson     # the text before the stub
+    assert "(keep-owner-wording.md)" not in (env.mem / "MEMORY.md").read_text()
+    assert learnlog.watermark(env.home, KEY) == 3
+    text = env.posts[-1][1]
+    assert "archived: The owner wants their own wording kept" in text and "skill `writing-style`" in text
+    prompt = env.calls()[-1]["prompt"]
+    assert "ARCHIVE that fact" in prompt and "/state/learn/stage/" in prompt.split("ARCHIVE that fact")[1][:400]
+
+
 def test_dry_run_changes_nothing_real(env):
     turns(env.home, 2)
     env.plan([

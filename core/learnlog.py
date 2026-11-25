@@ -304,23 +304,48 @@ def save_counters(home, data: dict) -> None:
     jsave(counters_path(home), data)
 
 
-def watermark(home, key: str) -> int:
+WM_KINDS = ("memory", "skill")
+
+
+def _wm_entry(data: dict, key: str) -> dict:
+    """{"memory": seq, "skill": seq}: memory and skill reviews keep their own watermark, so turns a frequent
+    memory review has seen are still in the next skill review (a plain number counts for both)."""
+    raw = data.get(key)
+    if isinstance(raw, dict):
+        out = {}
+        for k in WM_KINDS:
+            try:
+                out[k] = int(raw.get(k) or 0)
+            except (TypeError, ValueError):
+                out[k] = 0
+        return out
     try:
-        return int(jload(watermarks_path(home), {}).get(key) or 0)
+        n = int(raw or 0)
     except (TypeError, ValueError):
-        return 0
+        n = 0
+    return {k: n for k in WM_KINDS}
 
 
-def set_watermark(home, key: str, seq: int) -> None:
+def watermark(home, key: str, kind: str = "combined") -> int:
+    """The sequence number reviewed up to: for one kind, or for both ("combined": the older of the two)."""
+    entry = _wm_entry(jload(watermarks_path(home), {}), key)
+    return entry[kind] if kind in WM_KINDS else min(entry.values())
+
+
+def set_watermark(home, key: str, seq: int, kind: str = "combined") -> None:
     with locked(home):
         data = jload(watermarks_path(home), {})
-        data[key] = max(int(seq), int(data.get(key) or 0))
+        entry = _wm_entry(data, key)
+        for k in (kind,) if kind in WM_KINDS else WM_KINDS:
+            entry[k] = max(int(seq), entry[k])
+        data[key] = entry
         jsave(watermarks_path(home), data)
 
 
-def pending_turns(home, key: str) -> list[dict]:
-    """Turns not reviewed yet. A watermark beyond the end of the log (the log was reset) counts as none."""
-    wm = watermark(home, key)
+def pending_turns(home, key: str, kind: str = "combined") -> list[dict]:
+    """Turns a review of `kind` has not seen yet ("combined": not seen by one of the two). A watermark
+    beyond the end of the log (the log was reset) counts as none."""
+    wm = watermark(home, key, kind)
     if wm and wm > _last_seq(log_path(home, key)):
         wm = 0
     return read_turns(home, key, after_seq=wm)

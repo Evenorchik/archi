@@ -69,12 +69,12 @@ def review_one(home: Path, key: str, *, kind: str = "combined", dry: bool = Fals
                explicit: bool = False, cfg: dict | None = None) -> dict:
     cfg = cfg or learnlog.load_config(home)
     archi = Config(home)
-    turns = learnlog.pending_turns(home, key)
+    skill_mode = cfg.get("skill_mode", "auto")
+    if skill_mode == "off" and kind in ("skill", "combined"):
+        kind = "memory"
+    turns = learnlog.pending_turns(home, key, kind)
     if not turns:
         return {"conversation": key, "skipped": "nothing new since the last review"}
-    skill_mode = cfg.get("skill_mode", "auto")
-    if kind == "skill" and skill_mode == "off":
-        kind = "memory"
     with_skills = kind in ("skill", "combined") and skill_mode != "off"
     name = f"{learnlog.run_stamp()}-{secrets.token_hex(2)}"
     d = digest.build(turns, max_turns=int(learnlog.number(cfg, "max_turns")),
@@ -94,7 +94,7 @@ def review_one(home: Path, key: str, *, kind: str = "combined", dry: bool = Fals
                        timeout_s=learnlog.number(cfg, "timeout_s"), cfg=archi)
 
     problems = stores.memory_problems(st)
-    fixes = [] if problems else stores.repair_index(st.memory) + stores.finalize_archives(st.memory)
+    fixes = [] if problems else stores.repair_index(st.memory) + stores.finalize_archives(st.memory, st.base / "memory")
     memory_lines = [] if problems else stores.describe_memory(st)
     small, big, rolled = stores.settle_skills(st, int(learnlog.number(cfg, "big_skill_lines")))
     proposals = sorted(stores.snapshot(st.proposals)) if st.proposals else []
@@ -109,7 +109,7 @@ def review_one(home: Path, key: str, *, kind: str = "combined", dry: bool = Fals
             dest = learnlog.learn_dir(home) / "proposals"
             for rel in proposals:
                 stores.copy_file(st.proposals / rel, dest / rel)
-        learnlog.set_watermark(home, key, d["last_seq"])
+        learnlog.set_watermark(home, key, d["last_seq"], kind)
 
     skipped_memory = set((applied.get("memory") or {}).get("skipped") or [])
     applied_skills = set((applied.get("skills") or {}).get("applied") or []) if not dry else {n for n, _ in small + big}
@@ -155,7 +155,7 @@ def run(home: Path | str | None = None, conversation: str | None = None, *, kind
     if not cfg.get("enabled", True) and not explicit and not dry:
         return [{"skipped": "the learning loop is disabled"}]
     keys = [conversation] if conversation else [k for k in learnlog.conversations(home)
-                                                if learnlog.pending_turns(home, k)]
+                                                if learnlog.pending_turns(home, k, kind)]
     keys = [k for k in keys if not learnlog.excluded(cfg, k)]
     if not keys:
         return [{"conversation": conversation, "skipped": "nothing to review"}]
