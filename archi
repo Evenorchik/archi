@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""archi: the agent's own command line (stdlib only, works without the venv).
+
+  archi tg topic create "<name>"     create a topic in the current chat (ARCHI_CHAT_ID)
+  archi tg topic rename "<name>"     rename the current topic (ARCHI_THREAD_ID)
+  archi tg topics [--all]            known topics / conversations
+  archi tg send "<text>" [--chat C] [--thread T|main]
+  archi config get KEY [--reveal]
+  archi config set KEY VALUE
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+from core.config import DEFAULTS, KNOWN_KEYS, Config, mask  # noqa: E402
+from doors.telegram import cli as tg_cli  # noqa: E402
+
+
+def cmd_config(args) -> int:
+    cfg = Config()
+    if args.config_cmd == "get":
+        value = cfg.get(args.key)
+        print(value if args.reveal else mask(args.key, value))
+        return 0
+    if args.key not in KNOWN_KEYS and args.key not in DEFAULTS and not args.force:
+        known = ", ".join(KNOWN_KEYS)
+        print(f"unknown key {args.key!r} (known: {known}); pass --force to set it anyway", file=sys.stderr)
+        return 2
+    cfg.set(args.key, args.value)
+    print(f"{args.key} = {mask(args.key, args.value)}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="archi", description="Archi command line")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    tg_cli.add_parser(sub)
+    c = sub.add_parser("config", help="read or change config/archi.env")
+    csub = c.add_subparsers(dest="config_cmd", required=True)
+    g = csub.add_parser("get")
+    g.add_argument("key")
+    g.add_argument("--reveal", action="store_true", help="print secrets in full")
+    s = csub.add_parser("set")
+    s.add_argument("key")
+    s.add_argument("value")
+    s.add_argument("--force", action="store_true")
+    args = ap.parse_args(argv)
+    if args.cmd == "config":
+        return cmd_config(args)
+    return tg_cli.run(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

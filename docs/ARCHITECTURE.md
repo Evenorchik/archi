@@ -33,7 +33,7 @@ Deadlines: silence limit and hard limit; the whole process group is killed on ti
 conversation; different conversations run in parallel.
 
 ## Conversations
-Key = door + chat + thread: `tg:<chat_id>:<thread_id|general>`, `mx:<room_id>`. The registry stores the
+Key = door + chat + thread: `tg:<chat_id>:<thread_id|main>` ("main" = outside any topic, General in groups), `mx:<room_id>`. The registry stores the
 provider session id, title, state (`open`, `closed`, `deleted`), timestamps. Every key has an optional persona
 file (`state/personas/<key>.md`) the agent can write when the user gives a topic its own rules.
 

@@ -1,0 +1,4 @@
+aiogram>=3.34,<4
+aiohttp>=3.9
+# tests
+pytest>=8
