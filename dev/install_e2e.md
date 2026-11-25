@@ -63,3 +63,7 @@ Each in a new systemd container with only curl and ca-certificates, the installe
   polling, 228 tests passing on Python 3.11.2.
 The Claude sign-in was the CLI's own login copied in (the "already signed in" path); `claude setup-token`
 itself is covered above, up to the OAuth page.
+
+The same images: `dev/test/Dockerfile` (Ubuntu 24.04), `dev/test/Dockerfile.ubuntu2204`, `dev/test/Dockerfile.debian12`.
+After publishing, the README command itself (`curl … | bash` from GitHub) was run on a fresh Ubuntu 22.04 with
+`ARCHI_NONINTERACTIVE=true`: cloned from GitHub, exit 0, the door polling, `archi update` "Already up to date".

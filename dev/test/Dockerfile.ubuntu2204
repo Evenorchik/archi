@@ -1,0 +1,6 @@
+# Ubuntu 22.04 (Python 3.10) with systemd as PID 1, for installer tests: docker build -t archi-test-2204 -f dev/test/Dockerfile.ubuntu2204 dev/test
+FROM ubuntu:22.04
+ENV container=docker DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends systemd systemd-sysv dbus ca-certificates curl && rm -rf /var/lib/apt/lists/* && systemctl mask getty.target systemd-logind.service console-getty.service
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

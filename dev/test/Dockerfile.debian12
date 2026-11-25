@@ -1,0 +1,6 @@
+# Debian 12 (Python 3.11.2) with systemd as PID 1, for installer tests: docker build -t archi-test-deb12 -f dev/test/Dockerfile.debian12 dev/test
+FROM debian:12
+ENV container=docker DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends systemd systemd-sysv dbus ca-certificates curl && rm -rf /var/lib/apt/lists/* && systemctl mask getty.target systemd-logind.service console-getty.service
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]
