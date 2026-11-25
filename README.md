@@ -79,6 +79,13 @@ leaves. Commands start with `!` in Element (`!new`, `!status`, `!help`), since E
 Unattended: `ARCHI_NONINTERACTIVE=1 ARCHI_MATRIX_HOMESERVER=… ARCHI_MATRIX_USER=… ARCHI_MATRIX_PASSWORD=…
 ARCHI_MATRIX_OWNER=@you:example.org archi setup matrix` (or `ARCHI_MATRIX_TOKEN` instead of user and password).
 
+## Development
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest -q
+```
+How the parts fit together: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Live test procedures and their results: `dev/`.
+
 ## Security
 Archi runs as root by default and executes whatever its agent decides to run. Use a dedicated server, keep the
 bot private (only the paired owner is answered), and keep backups.

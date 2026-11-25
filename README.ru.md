@@ -77,6 +77,13 @@ curl -fsSL https://raw.githubusercontent.com/Evenorchik/archi/main/install.sh | 
   ARCHI_CLAUDE_OAUTH_TOKEN=<токен из claude setup-token> bash
 ```
 
+## Разработка
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest -q
+```
+Как устроены части: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Порядок живых проверок и их результаты: `dev/`.
+
 ## Безопасность
 По умолчанию Archi работает от root и выполняет всё, что решит его агент. Ставьте его на отдельный
 сервер, не открывайте бота посторонним (он отвечает только привязанному владельцу) и делайте бэкапы.

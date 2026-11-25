@@ -618,7 +618,7 @@ def main() -> int:
     ap.add_argument("--keep", action="store_true", help="keep the container, volume and work directory")
     a = ap.parse_args()
     if not Path(PY).exists():
-        print(f"no venv at {PY}: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt")
+        print(f"no venv at {PY}: python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt")
         return 2
     HS = f"http://127.0.0.1:{a.port}"
     WORK = Path(tempfile.mkdtemp(prefix="archi-mx-e2e-"))

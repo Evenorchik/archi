@@ -1,0 +1,3 @@
+# Everything the agent needs, plus the test runner (not installed on servers)
+-r requirements.txt
+pytest>=8

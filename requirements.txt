@@ -2,5 +2,3 @@ aiogram>=3.34,<4
 aiohttp>=3.9
 # Matrix door, without end-to-end encryption: no [e2e] extra, so no libolm / vodozemac
 matrix-nio==0.26.0
-# tests
-pytest>=8

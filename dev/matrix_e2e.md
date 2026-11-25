@@ -10,7 +10,7 @@ container and its volume at the end.
 
 ## Repeat it
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 python3 dev/matrix_e2e.py            # --port 18008 (default), --keep to inspect afterwards
 ```
 `dev/matrix_e2e.py` (stdlib only) does the whole run:

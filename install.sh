@@ -17,6 +17,7 @@
 #   ARCHI_NONINTERACTIVE=1      ask nothing; the answers come from:
 #     ARCHI_BOT_TOKEN, ARCHI_PROVIDER (claude|codex), ARCHI_OPENAI_KEY, ARCHI_CLAUDE_OAUTH_TOKEN,
 #     ARCHI_SKIP_CLI_INSTALL=1, ARCHI_SKIP_LOGIN=1, ARCHI_SKIP_PAIRING_WAIT=1, ARCHI_RECONFIGURE=1
+#   ARCHI_PAIRING_WAIT_S=900    how long the installer waits for you to send the pairing code
 #
 # Exit codes: 0 done · 1 unexpected error · 2 not root · 3 unsupported system · 4 no systemd ·
 #             5 packages · 6 code download · 7 Python environment · 8 setup cancelled or failed · 9 service
@@ -78,6 +79,7 @@ install_packages() {
   done
   if [ "${#missing[@]}" -eq 0 ]; then
     ok "already installed: ${PACKAGES[*]}"
+    check_python
     return
   fi
   mkdir -p "$LOG_DIR"
@@ -87,8 +89,13 @@ install_packages() {
     tail -n 15 "$LOG_DIR/apt.log" >&2 || true
     die 5 "Package installation failed; the full log is in $LOG_DIR/apt.log"
   fi
-  python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' || die 3 "Python 3.10 or newer is required (found $(python3 --version 2>&1))."
   ok "installed: ${missing[*]}"
+  check_python
+}
+
+check_python() {
+  python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' \
+    || die 3 "Python 3.10 or newer is required (found $(python3 --version 2>&1))."
 }
 
 copy_source() {
