@@ -4,11 +4,12 @@ import json
 
 import pytest
 
+from core import running
 from core.config import Config
 from core.conversations import Registry
 from core.engine import Event, TurnResult
 from doors.telegram.api import TgError
-from doors.telegram.bot import Door, parse_model_args
+from doors.telegram.bot import PAIR_MAX_FAILURES, Door, parse_model_args
 
 OWNER, STRANGER, BOT = 1001, 2002, 999
 GROUP = -100500
@@ -412,7 +413,94 @@ def test_key_message_is_stored_and_deleted(tmp_path, monkeypatch):
 
 def test_restart_notice_for_interrupted_turns(tmp_path):
     door, api = make_door(tmp_path)
-    door._inflight_write({f"tg:{OWNER}:5": {"started_at": 1}})
+    dead = 2 ** 22 + 12345                      # beyond pid_max on any normal system: never alive
+    running.start("telegram", f"tg:{OWNER}:5", tmp_path, pid=dead)
+    running.start("telegram", f"tg:{OWNER}:6", tmp_path)          # a live process (this one): not ours to report
     go(door._report_interrupted())
+    assert len(api.sent()) == 1
     assert api.sent()[0]["message_thread_id"] == 5 and "interrupted" in api.sent()[0]["text"]
-    assert door._inflight_read() == {}
+    assert [m["key"] for m in running.active(tmp_path)] == [f"tg:{OWNER}:6"]
+    assert running.leftovers("telegram", tmp_path) == []
+
+
+def test_run_marker_covers_delivery_and_survives_shutdown(tmp_path):
+    seen = []
+
+    class Api(FakeApi):
+        async def call(self, method, **params):
+            if method == "sendMessage" and "Hi from the agent" in params.get("text", ""):
+                seen.append([m["key"] for m in running.active(tmp_path)])
+            return await super().call(method, **params)
+
+    door, _ = make_door(tmp_path)
+    door.api = Api()
+    door.topics.api = door.api
+
+    async def scenario():
+        await door.handle_update(dm("hello"))
+        await settle(door)
+
+    go(scenario())
+    assert seen == [[f"tg:{OWNER}:main"]]        # still "running" while the answer is being sent
+    assert running.active(tmp_path) == []          # and gone afterwards
+
+    runner = FakeRunner(wait_cancel=True)
+    door2, api2 = make_door(tmp_path / "b", runner)
+
+    async def shutdown():
+        await door2.handle_update(dm("long task"))
+        await asyncio.wait_for(runner.started.wait(), 5)
+        door2.stopping = True
+        for t in list(door2.running.values()):
+            t.cancel.set()
+        await settle(door2)
+
+    go(shutdown())
+    assert not any("Stopped" in t for t in api2.texts())        # nothing sent while shutting down
+    assert [m["key"] for m in running.active(tmp_path / "b")] == [f"tg:{OWNER}:main"]
+
+
+# ------------------------------------------------------------------ first run
+def test_pairing_starts_the_first_run_turn(tmp_path):
+    runner = FakeRunner("Hello, I run on this server.")
+    door, api = make_door(tmp_path, runner, owner=None, PAIRING_CODE="123456")
+
+    async def scenario():
+        await door.handle_update(dm("/start 123456", lang="ru"))
+        await settle(door)
+
+    go(scenario())
+    assert door.cfg.owner_id() == OWNER
+    assert len(runner.calls) == 1
+    call = runner.calls[0]
+    assert "First run" in call["prompt"] and "ru" in call["prompt"]
+    assert call["env"]["ARCHI_CONVERSATION"] == f"tg:{OWNER}:main"
+    assert "without a name yet" in call["system_prompt"]
+    assert api.texts()[0].startswith("✅ Paired") and api.texts()[-1] == "Hello, I run on this server."
+
+
+def test_pairing_again_with_a_name_greets_instead(tmp_path):
+    runner = FakeRunner()
+    door, api = make_door(tmp_path, runner, owner=None, PAIRING_CODE="654321", AGENT_NAME="Max")
+
+    async def scenario():
+        await door.handle_update(dm("654321"))
+        await settle(door)
+
+    go(scenario())
+    assert "paired with you again" in runner.calls[0]["prompt"]
+    assert "You are Max" in runner.calls[0]["system_prompt"]
+
+
+def test_too_many_wrong_codes_revoke_the_pairing_code(tmp_path):
+    door, api = make_door(tmp_path, owner=None, PAIRING_CODE="111111")
+
+    async def scenario():
+        await door.handle_update(dm("/start", uid=STRANGER))           # not a guess
+        for i in range(PAIR_MAX_FAILURES):
+            await door.handle_update(dm(f"{200000 + i}", uid=STRANGER, mid=100 + i))
+        await door.handle_update(dm("111111", uid=STRANGER, mid=999))  # too late: revoked
+        await settle(door)
+
+    go(scenario())
+    assert door.cfg.owner_id() is None and door.cfg.get("PAIRING_CODE") == "" and api.calls == []

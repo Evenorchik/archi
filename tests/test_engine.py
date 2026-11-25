@@ -180,3 +180,16 @@ def test_labels():
     assert engine.codex_command_label("bash -lc 'ls -la'") is None
     assert engine.codex_command_label("bash -lc 'pip install x'") == "Installing packages"
     assert engine.codex_command_label("make build").startswith("Running: make")
+
+
+def test_claude_gets_the_oauth_token_from_the_config(fake_cli, home, monkeypatch):
+    from core.config import Config
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    Config(home).set("CLAUDE_CODE_OAUTH_TOKEN", "tok-from-config")
+    res = run(run_turn("claude", "hi", None, cwd=home))
+    assert res.ok and calls(fake_cli)[0]["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "tok-from-config"
+    res = run(run_turn("codex", "hi", None, cwd=home))
+    assert res.ok and "CLAUDE_CODE_OAUTH_TOKEN" not in calls(fake_cli)[1]["env"]
+    Config(home).set("CLAUDE_CODE_OAUTH_TOKEN", "")
+    run(run_turn("claude", "hi", None, cwd=home))
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in calls(fake_cli)[2]["env"]     # empty = the CLI's own login

@@ -182,6 +182,23 @@ def codex_command_label(command: str) -> str | None:
     return _cut("Running: " + cmd.split("\n", 1)[0], 80)
 
 
+def provider_env(provider: str, cfg=None) -> dict[str, str]:
+    """Credentials a provider CLI gets from config/archi.env. Secrets live only in that file (the door's
+    own environment does not carry them), so every CLI start reads them from there: a token written by
+    `archi setup` works on the next turn without a restart.
+
+    claude: CLAUDE_CODE_OAUTH_TOKEN (a `claude setup-token` token). When it is empty the CLI uses its own
+    login (~/.claude/.credentials.json). codex keeps its login in ~/.codex/auth.json and needs nothing here."""
+    if provider != "claude":
+        return {}
+    from .config import Config
+    try:
+        token = (cfg or Config()).get("CLAUDE_CODE_OAUTH_TOKEN").strip()
+    except OSError:
+        return {}
+    return {"CLAUDE_CODE_OAUTH_TOKEN": token} if token else {}
+
+
 # ---------------------------------------------------------------------------------------------- parsers
 
 class ClaudeStream:
@@ -553,6 +570,7 @@ async def run_turn(provider: str, prompt: str, session_id: str | None, *, cwd: s
 
     child_env = dict(os.environ)
     child_env.pop("CLAUDECODE", None)   # a nested CLI must not think it runs inside another session
+    child_env.update(provider_env(provider))
     child_env.update({k: str(v) for k, v in (env or {}).items()})
 
     res = await _attempt(provider, prompt, session_id, cwd=str(cwd), images=images, env=child_env,

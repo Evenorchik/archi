@@ -5,7 +5,6 @@ The door puts the current chat and topic into ARCHI_CHAT_ID / ARCHI_THREAD_ID fo
 """
 from __future__ import annotations
 
-import argparse
 import os
 import sys
 

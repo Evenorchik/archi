@@ -17,3 +17,4 @@ __pycache__/
 
 # build markers
 .build-a-status
+.build-b-status

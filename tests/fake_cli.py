@@ -13,7 +13,8 @@ argv = sys.argv[1:]
 stdin = sys.stdin.read() if not sys.stdin.isatty() else ""
 with open(os.environ.get("FAKE_LOG", "/dev/null"), "a") as fh:
     fh.write(json.dumps({"argv": argv, "stdin": stdin, "cwd": os.getcwd(),
-                         "env": {k: v for k, v in os.environ.items() if k.startswith("ARCHI_")}}) + "\n")
+                         "env": {k: v for k, v in os.environ.items()
+                                 if k.startswith("ARCHI_") or k == "CLAUDE_CODE_OAUTH_TOKEN"}}) + "\n")
 
 
 def out(obj):

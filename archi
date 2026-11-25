@@ -1,10 +1,27 @@
 #!/usr/bin/env python3
 """archi: the agent's own command line (stdlib only, works without the venv).
 
+Operations
+  archi status                       services, provider, model, pairing, running turns (no secrets)
+  archi restart [--when-idle] [--delay N] [--max-wait S]
+                                     restart the door(s); from inside a turn it is always deferred
+  archi logs [-n N] [--door D]       recent service log lines (journalctl; never follows)
+  archi validate                     syntax, imports, dry start, config sanity; non-zero on failure
+  archi update [--no-restart]        pull upstream, keep local changes, validate, restart when idle
+  archi identity set-name "<name>"   name the agent: config, CLAUDE.md, Telegram bot name
+  archi setup [telegram|provider [claude|codex]|voice]
+                                     onboarding (the installer runs it) or one of its steps
+  archi pair [--reset] [--wait S]    pairing code for the owner's Telegram account
+  archi service install              write, enable and (re)start archi-telegram.service
+  archi version
+
+Telegram (for the agent, inside a turn)
   archi tg topic create "<name>"     create a topic in the current chat (ARCHI_CHAT_ID)
   archi tg topic rename "<name>"     rename the current topic (ARCHI_THREAD_ID)
   archi tg topics [--all]            known topics / conversations
   archi tg send "<text>" [--chat C] [--thread T|main]
+
+Config
   archi config get KEY [--reveal]
   archi config set KEY VALUE
 """
@@ -18,6 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
 from core.config import DEFAULTS, KNOWN_KEYS, Config, mask  # noqa: E402
 from doors.telegram import cli as tg_cli  # noqa: E402
+from ops import cli as ops_cli  # noqa: E402
 
 
 def cmd_config(args) -> int:
@@ -36,8 +54,10 @@ def cmd_config(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="archi", description="Archi command line")
+    ap = argparse.ArgumentParser(prog="archi", description="Archi command line",
+                                 formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
+    ops_cli.add_parsers(sub)
     tg_cli.add_parser(sub)
     c = sub.add_parser("config", help="read or change config/archi.env")
     csub = c.add_subparsers(dest="config_cmd", required=True)
@@ -51,7 +71,9 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     if args.cmd == "config":
         return cmd_config(args)
-    return tg_cli.run(args)
+    if args.cmd == "tg":
+        return tg_cli.run(args)
+    return ops_cli.run(args)
 
 
 if __name__ == "__main__":

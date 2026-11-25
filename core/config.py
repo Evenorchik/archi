@@ -21,12 +21,14 @@ CODE_DIR = Path(__file__).resolve().parent.parent
 
 KNOWN_KEYS = (
     "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_BOT_USERNAME",
     "OWNER_ID",
     "PAIRING_CODE",
     "PROVIDER",
     "CLAUDE_MODEL",
     "CLAUDE_EFFORT",
     "CODEX_MODEL",
+    "CLAUDE_CODE_OAUTH_TOKEN",
     "OPENAI_API_KEY",
     "AGENT_NAME",
 )
@@ -43,7 +45,7 @@ DEFAULTS = {
     "TG_PROBE_INTERVAL": "900",
     "TG_AUTO_TITLE": "1",
 }
-SECRET_KEYS = {"TELEGRAM_BOT_TOKEN", "OPENAI_API_KEY", "PAIRING_CODE"}
+SECRET_KEYS = {"TELEGRAM_BOT_TOKEN", "OPENAI_API_KEY", "PAIRING_CODE", "CLAUDE_CODE_OAUTH_TOKEN"}
 PROVIDERS = ("claude", "codex")
 _KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _PLAIN_VALUE = re.compile(r"^[A-Za-z0-9_@:/.+,=%-]*$")
@@ -179,6 +181,10 @@ class Config:
 
     def agent_name(self) -> str:
         return str(self.identity().get("name") or self.get("AGENT_NAME") or "Archi")
+
+    def has_name(self) -> bool:
+        """False until the owner gave the agent a name (the "First run" of CLAUDE.md is still pending)."""
+        return bool(str(self.identity().get("name") or "").strip() or self.all().get("AGENT_NAME", "").strip())
 
     def owner_id(self) -> int | None:
         raw = self.get("OWNER_ID").strip()

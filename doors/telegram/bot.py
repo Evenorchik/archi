@@ -10,17 +10,17 @@ from __future__ import annotations
 
 import asyncio
 import hmac
-import json
 import logging
 import os
+import re
 import shutil
 import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from core import engine, voice
-from core.config import Config, atomic_write, home
+from core import engine, running, voice
+from core.config import Config
 from core.conversations import Conversation, Registry, make_key, parse_key
 from core.markers import split_answer
 from core.prompt import base_system_prompt, stamp
@@ -29,7 +29,7 @@ from core.status import TurnStatus, clock
 from . import media, render
 from .api import TgError
 from .live import LiveStatus
-from .topics import Topics, is_service, key_of, thread_of, title_from_text
+from .topics import Topics, is_service, title_from_text
 
 log_ = logging.getLogger("archi.telegram")
 
@@ -50,6 +50,21 @@ KEY_REQUEST = {
     "uk": "Дай мне ключ, я внесу его в конфиг",
 }
 KEY_REQUEST_EN = "Send me an OpenAI API key and I will add it to the config"
+DOOR = "telegram"
+PAIR_MAX_FAILURES = 20          # wrong codes before the pairing code is revoked (brute-force guard)
+FIRST_RUN_PROMPT = (
+    "[Message from the Archi door, not written by the owner] The owner has just paired with you in this "
+    "private chat{lang}. This is your first conversation: follow the \"First run\" section of CLAUDE.md now. "
+    "Find out this server's hostname and public IP, run `archi status` for the provider and model you run "
+    "on, then introduce yourself in the owner's language: those facts, what you can do in two lines, and "
+    "the two questions (what name you should have; how to work with the owner and what to do first). "
+    "Keep it short; no tables."
+)
+REPAIRED_PROMPT = (
+    "[Message from the Archi door, not written by the owner] The owner has just paired with you again in "
+    "this private chat{lang}. Greet them in a few lines: your name, this server's hostname, the provider "
+    "and model you run on (`archi status`), and ask what to do."
+)
 
 
 @dataclass
@@ -79,7 +94,8 @@ class Door:
         self.started = time.time()
         self._buffers: dict[str, dict] = {}
         self._owner_lang = ""
-        self.inflight_path = self.home / "state" / "inflight.json"
+        self._pair_failures = 0
+        self.stopping = False          # set when the process shuts down: running turns are not reported
 
     # ================================================================== startup
     async def startup(self) -> None:
@@ -101,39 +117,17 @@ class Door:
         await self._report_interrupted()
 
     async def _report_interrupted(self) -> None:
-        """Turns that were running when the door stopped were killed with it; say so where they ran."""
-        stale = self._inflight_read()
-        if not stale:
-            return
-        self._inflight_write({})
-        for key, info in stale.items():
-            _door, chat, thread = parse_key(key)
+        """Turns that were running when the previous door process ended were killed with it (their run
+        markers are still there): say so in the conversations where they ran."""
+        for m in running.leftovers(DOOR, self.home):
+            key = str(m.get("key") or "")
+            if not key.startswith("tg:"):
+                continue
             try:
                 await self.send_text(key, "⚠️ I was restarted while a task was running here, so it was "
                                           "interrupted. Send the request again if it is still needed.")
             except Exception as e:  # noqa: BLE001
                 self.log("restart notice failed", key, repr(e))
-
-    def _inflight_read(self) -> dict:
-        try:
-            data = json.loads(self.inflight_path.read_text())
-            return data if isinstance(data, dict) else {}
-        except (OSError, ValueError):
-            return {}
-
-    def _inflight_write(self, data: dict) -> None:
-        try:
-            atomic_write(self.inflight_path, json.dumps(data))
-        except OSError as e:
-            self.log("inflight write failed", repr(e))
-
-    def _inflight(self, key: str, on: bool) -> None:
-        data = self._inflight_read()
-        if on:
-            data[key] = {"started_at": time.time()}
-        else:
-            data.pop(key, None)
-        self._inflight_write(data)
 
     # ================================================================== dispatch
     async def handle_update(self, upd: dict) -> None:
@@ -216,14 +210,28 @@ class Door:
         if text.lower().startswith("/start"):
             text = text[6:].strip()
         if not code or not text or not hmac.compare_digest(text.encode(), code.encode()):
+            if code and re.fullmatch(r"\d{4,10}", text):
+                self._pair_failures += 1
+                if self._pair_failures >= PAIR_MAX_FAILURES:
+                    self.cfg.set("PAIRING_CODE", "")
+                    self.log(f"{PAIR_MAX_FAILURES} wrong pairing codes: the code is revoked; "
+                             "make a new one with `archi pair`")
             return   # silence: a stranger learns nothing, not even that a code exists
         uid = msg["from"]["id"]
         self.cfg.update({"OWNER_ID": str(uid), "PAIRING_CODE": ""})
+        self._pair_failures = 0
         self.log("paired with owner", uid)
-        name = self.cfg.agent_name()
-        await self._send_plain(msg["chat"]["id"], None,
-                               f"✅ Paired. You are my owner now; I answer only you.\n\nI am {name}. Write to me "
-                               "here, or create topics: every topic is a separate conversation.")
+        lang = (msg["from"].get("language_code") or "").strip()
+        if lang:
+            self._owner_lang = lang
+        await self._send_plain(msg["chat"]["id"], msg.get("message_thread_id") if msg.get("is_topic_message")
+                               else None, "✅ Paired. You are my owner now; I answer only you.")
+        # The first turn is the door's, not the owner's: the agent introduces itself and asks for its name
+        # ("First run" in CLAUDE.md), so a fresh install starts a conversation instead of waiting in silence.
+        conv = self.topics.learn(msg)
+        hint = f" (their Telegram language code: {lang})" if lang else ""
+        prompt = (FIRST_RUN_PROMPT if not self.cfg.has_name() else REPAIRED_PROMPT).format(lang=hint)
+        self.spawn(self.turn(conv.key, prompt))
 
     def _lang(self) -> str:
         return (getattr(self, "_owner_lang", "") or "").split("-")[0].lower()
@@ -560,34 +568,53 @@ class Door:
             live = LiveStatus(self.api, conv.chat_id, conv.thread_id, conv.kind, st, log=self.log)
             run = RunningTurn(key, asyncio.Event(), st, live)
             self.running[key] = run
-            self._inflight(key, True)
+            # The marker covers the whole turn INCLUDING delivery: `archi restart --when-idle` must not see
+            # "idle" between the CLI's exit and the answer reaching Telegram.
+            try:
+                marker = running.start(DOOR, key, self.home, hard_s=engine.Limits().hard_s)
+            except OSError as e:
+                marker = None
+                self.log("run marker not written", key, repr(e))
+            keep_marker = False
             chat_title = self.registry.chat(conv.chat_id).get("title", "")
 
             def on_event(ev: engine.Event) -> None:
                 st.feed(ev)
                 live.poke()
 
-            await live.start()
-            res = None
             try:
-                res = await self.runner(provider, f"{stamp(self.cfg)}\n{prompt}", conv.sessions.get(provider),
-                                        cwd=self.home, images=images, on_event=on_event,
-                                        env=self.turn_env(conv), system_prompt=self.system_prompt(conv, chat_title),
-                                        model=model, effort=effort, cancel=run.cancel)
-            except Exception as e:  # noqa: BLE001
-                res = engine.TurnResult("", None, False, f"internal error: {e!r}")
+                await live.start()
+                res = None
+                try:
+                    res = await self.runner(provider, f"{stamp(self.cfg)}\n{prompt}", conv.sessions.get(provider),
+                                            cwd=self.home, images=images, on_event=on_event,
+                                            env=self.turn_env(conv),
+                                            system_prompt=self.system_prompt(conv, chat_title),
+                                            model=model, effort=effort, cancel=run.cancel)
+                except Exception as e:  # noqa: BLE001
+                    res = engine.TurnResult("", None, False, f"internal error: {e!r}")
+                finally:
+                    self.running.pop(key, None)
+                    st.finish(res or engine.TurnResult("", None, False, "interrupted"))
+                    await live.stop(bool(res and res.ok))
+                try:
+                    if res.session_id:
+                        self.registry.set_session(key, provider, res.session_id, gen=gen)
+                    self.registry.upsert(key, last_turn_at=time.time())
+                except Exception as e:  # noqa: BLE001 - bookkeeping must never eat the answer
+                    self.log("session save failed", key, repr(e))
+                if self.stopping:
+                    # Killed by the shutdown, not by the owner: the next door process reports it as
+                    # interrupted (the marker stays), nothing is sent now.
+                    keep_marker = True
+                    return
+                await self.deliver(key, res, st)
+            except asyncio.CancelledError:
+                keep_marker = True
+                raise
             finally:
-                self.running.pop(key, None)
-                self._inflight(key, False)
-                st.finish(res or engine.TurnResult("", None, False, "interrupted"))
-                await live.stop(bool(res and res.ok))
-            try:
-                if res.session_id:
-                    self.registry.set_session(key, provider, res.session_id, gen=gen)
-                self.registry.upsert(key, last_turn_at=time.time())
-            except Exception as e:  # noqa: BLE001 - bookkeeping must never eat the answer
-                self.log("session save failed", key, repr(e))
-            await self.deliver(key, res, st)
+                if not keep_marker:
+                    running.finish(marker)
 
     async def deliver(self, key: str, res: engine.TurnResult, st: TurnStatus) -> None:
         if res.cancelled:
@@ -722,14 +749,44 @@ async def amain() -> None:
     try:
         await dp.start_polling(bot, allowed_updates=ALLOWED_UPDATES, handle_as_tasks=False)
     finally:
+        # SIGTERM (systemctl stop/restart): stop the running turns so their CLI process trees are killed
+        # by the engine, give them a moment, then close the HTTP sessions. Their run markers stay, so the
+        # next start tells those conversations that the task was interrupted.
+        door.stopping = True
         probe.cancel()
         for t in list(door.running.values()):
             t.cancel.set()
+        pending = [t for t in door.tasks if not t.done()]
+        if pending:
+            await asyncio.wait(pending, timeout=10)
         await api.close()
+
+
+def check() -> int:
+    """Dry start for `archi validate`: config, token format and door construction, no network calls."""
+    cfg = Config()
+    token = cfg.get("TELEGRAM_BOT_TOKEN")
+    if not token:
+        print(f"TELEGRAM_BOT_TOKEN is not set in {cfg.path}")
+        return 1
+    from aiogram import Bot
+    from aiogram.utils.token import TokenValidationError
+
+    from .api import TgApi
+    try:
+        bot = Bot(token=token)
+    except TokenValidationError:
+        print("TELEGRAM_BOT_TOKEN has an invalid format")
+        return 1
+    Door(TgApi(token, bot=bot), cfg)
+    print(f"door ok: home={cfg.home}, provider={cfg.provider()}")
+    return 0
 
 
 def main() -> None:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    if "--check" in sys.argv[1:]:
+        sys.exit(check())
     try:
         asyncio.run(amain())
     except KeyboardInterrupt:

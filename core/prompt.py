@@ -29,8 +29,11 @@ def stamp(cfg: Config, now: datetime | None = None) -> str:
 def base_system_prompt(cfg: Config) -> str:
     ident = cfg.identity()
     name = cfg.agent_name()
+    who = (f"You are {name}, a personal agent" if cfg.has_name() else
+           "You are a personal agent without a name yet (the owner gives you one on the first run; until "
+           f"then you may call yourself {name})")
     parts = [
-        f"You are {name}, a personal agent that runs on its owner's own server with full access to it. "
+        f"{who} that runs on its owner's own server with full access to it. "
         "The owner talks to you through a messenger; every message you get comes from the owner.",
         "The first line of each owner message is a timestamp added by the door, for example "
         "[25.11.2026 14:05, Wednesday · Europe/Berlin]. It is context, not the owner's words: use it to "
