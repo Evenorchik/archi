@@ -22,11 +22,10 @@ import sys
 #   MEMORY = ~/.claude/projects/<slug>/memory (Claude Code's own memory store)
 # Override with ARCHI_HOME / ARCHI_MEMORY_DIR.
 BASE = os.environ.get("ARCHI_HOME", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_slug = re.sub(r"[^A-Za-z0-9]", "-", BASE)
-MEMORY_DIR = os.environ.get(
-    "ARCHI_MEMORY_DIR",
-    os.path.join(os.path.expanduser("~"), ".claude", "projects", _slug, "memory"),
-)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from core.memory import memory_dir  # noqa: E402  (one definition of where the memory lives)
+
+MEMORY_DIR = str(memory_dir(BASE))
 ROOTS = [
     os.path.join(BASE, "sessions"),
     os.path.join(BASE, "knowledge"),

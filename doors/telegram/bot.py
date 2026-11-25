@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from core import engine, running, voice
+from core import afterturn, engine, jobs, running, voice
 from core.config import Config
 from core.conversations import Conversation, Registry, make_key, parse_key
 from core.markers import split_answer
@@ -40,6 +40,7 @@ COMMANDS = [
     ("provider", "Show or switch the agent: claude or codex"),
     ("topics", "Known topics of this chat"),
     ("stop", "Stop the task running in this topic"),
+    ("learn", "Review this conversation now and save the lessons"),
     ("help", "What I can do here"),
 ]
 ALLOWED_UPDATES = ["message", "my_chat_member", "stopped_message_generation"]
@@ -51,6 +52,10 @@ KEY_REQUEST = {
 }
 KEY_REQUEST_EN = "Send me an OpenAI API key and I will add it to the config"
 DOOR = "telegram"
+DOWNTIME_UNCONFIRM_S = 20 * 3600   # Telegram keeps undelivered updates for 24 h: a rename during a longer
+                                   # outage is lost, so stored titles can no longer be trusted for probing
+HEARTBEAT_S = 300
+JOBS_POLL_S = 5
 PAIR_MAX_FAILURES = 20          # wrong codes before the pairing code is revoked (brute-force guard)
 FIRST_RUN_PROMPT = (
     "[Message from the Archi door, not written by the owner] The owner has just paired with you in this "
@@ -114,6 +119,8 @@ class Door:
                 self.log("no owner yet: send the pairing code to the bot in a private chat")
             else:
                 self.log("WARNING: neither OWNER_ID nor PAIRING_CODE is set; nobody can use this bot")
+        self.check_downtime()
+        self.heartbeat()
         await self._report_interrupted()
 
     async def _report_interrupted(self) -> None:
@@ -271,7 +278,7 @@ class Door:
         name = name.lower()
         handler = {"new": self._cmd_new, "status": self._cmd_status, "model": self._cmd_model,
                    "provider": self._cmd_provider, "topics": self._cmd_topics, "stop": self._cmd_stop,
-                   "help": self._cmd_help, "start": self._cmd_help}.get(name)
+                   "learn": self._cmd_learn, "help": self._cmd_help, "start": self._cmd_help}.get(name)
         if handler is None:
             return False   # unknown slash text is a normal message (the engine neutralises the slash)
         self.spawn(handler(conv, args.strip()))   # commands do not wait for the running turn
@@ -399,6 +406,15 @@ class Door:
             return
         run.cancel.set()
 
+    async def _cmd_learn(self, conv: Conversation, args: str) -> None:
+        provider = self._provider(conv)
+        try:
+            text = await asyncio.to_thread(afterturn.review_now, DOOR, conv.key, provider=provider,
+                                           session_id=conv.sessions.get(provider), home=self.home)
+        except Exception as e:  # noqa: BLE001
+            text = f"⚠️ Could not start the review: {e!r}"
+        await self.send_text(conv.key, text)
+
     async def _cmd_help(self, conv: Conversation, args: str) -> None:
         name = self.cfg.agent_name()
         await self.send_text(conv.key, "\n".join([
@@ -522,7 +538,7 @@ class Door:
             self.spawn(self.topics.rename(conv, title))
 
     # ================================================================== turns
-    def system_prompt(self, conv: Conversation, chat_title: str = "") -> str:
+    def system_prompt(self, conv: Conversation, chat_title: str = "", provider: str | None = None) -> str:
         if conv.is_main:
             where = ("the main part of the private chat, outside any topic" if conv.kind == "dm"
                      else f"the General topic of the group «{chat_title or conv.chat_id}»")
@@ -540,7 +556,7 @@ class Door:
             "  archi tg send \"<text>\"           post a message here now; --thread <id|main> for another topic\n"
             "When the owner asks for a new topic, create it with the command above instead of explaining how."
         )
-        return f"{base_system_prompt(self.cfg)}\n\n{tg}"
+        return f"{base_system_prompt(self.cfg, conv.key, provider or self._provider(conv))}\n\n{tg}"
 
     def turn_env(self, conv: Conversation) -> dict:
         path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
@@ -589,7 +605,7 @@ class Door:
                     res = await self.runner(provider, f"{stamp(self.cfg)}\n{prompt}", conv.sessions.get(provider),
                                             cwd=self.home, images=images, on_event=on_event,
                                             env=self.turn_env(conv),
-                                            system_prompt=self.system_prompt(conv, chat_title),
+                                            system_prompt=self.system_prompt(conv, chat_title, provider),
                                             model=model, effort=effort, cancel=run.cancel)
                 except Exception as e:  # noqa: BLE001
                     res = engine.TurnResult("", None, False, f"internal error: {e!r}")
@@ -609,12 +625,90 @@ class Door:
                     keep_marker = True
                     return
                 await self.deliver(key, res, st)
+                if res.ok and res.session_id:
+                    await self._after_turn(key, provider, res.session_id, len(st.steps))
             except asyncio.CancelledError:
                 keep_marker = True
                 raise
             finally:
                 if not keep_marker:
                     running.finish(marker)
+
+    async def _after_turn(self, key: str, provider: str, session_id: str, tool_calls: int) -> None:
+        try:
+            kind = await asyncio.to_thread(afterturn.turn_finished, DOOR, key, provider=provider,
+                                           session_id=session_id, tool_calls=tool_calls, home=self.home)
+            if kind:
+                self.log("learning review started", key, kind)
+        except Exception as e:  # noqa: BLE001 - the learning loop must never break the door
+            self.log("learning hook failed", key, repr(e))
+
+    # ================================================================== durable jobs
+    async def report_jobs(self) -> int:
+        """Start a report turn for every finished job of this door. Returns how many were started."""
+        started = 0
+        for job in await asyncio.to_thread(jobs.finished_unreported, DOOR, self.home):
+            key = str(job.get("conversation") or "")
+            conv = self.registry.get(key) if key else None
+            if conv is None:
+                self.log("job without a known conversation", job.get("id"), key)
+                await asyncio.to_thread(jobs.mark_reported, str(job.get("id")), self.home)
+                continue
+            if conv.state == "deleted":
+                # The topic is gone: report in the main part of the same chat instead.
+                key = make_key("tg", conv.chat_id, None)
+                self.registry.ensure(key, kind=conv.kind, state="open", title="main")
+            self.spawn(self.turn(key, jobs.report_prompt(job)))
+            await asyncio.to_thread(jobs.mark_reported, str(job.get("id")), self.home)
+            started += 1
+        return started
+
+    async def jobs_loop(self, interval: float = JOBS_POLL_S) -> None:
+        while True:
+            try:
+                await self.report_jobs()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                self.log("jobs loop error", repr(e))
+            await asyncio.sleep(interval)
+
+    # ================================================================== downtime
+    @property
+    def alive_path(self) -> Path:
+        return self.home / "state" / "telegram.alive"
+
+    def heartbeat(self) -> None:
+        try:
+            self.alive_path.parent.mkdir(parents=True, exist_ok=True)
+            self.alive_path.write_text(str(int(time.time())))
+        except OSError as e:
+            self.log("heartbeat not written", repr(e))
+
+    def check_downtime(self, now: float | None = None) -> float | None:
+        """Called once at startup, before the first heartbeat. After an outage longer than Telegram keeps
+        updates, a topic may have been renamed without us hearing about it: probing it with the stored
+        name would rename it back. Such titles stop counting as confirmed until a new rename event (or a
+        rename by the agent) confirms them again. Returns the outage length, None on the first start."""
+        now = time.time() if now is None else now
+        try:
+            last = self.alive_path.stat().st_mtime
+        except OSError:
+            return None
+        down = now - last
+        if down > DOWNTIME_UNCONFIRM_S:
+            n = 0
+            for conv in self.registry.all(door="tg"):
+                if conv.title_confirmed and not conv.is_main:
+                    self.registry.upsert(conv.key, title_confirmed=False)
+                    n += 1
+            self.log(f"door was down {down / 3600:.0f} h: {n} topic title(s) no longer trusted for probing")
+        return down
+
+    async def heartbeat_loop(self, interval: float = HEARTBEAT_S) -> None:
+        while True:
+            self.heartbeat()
+            await asyncio.sleep(interval)
 
     async def deliver(self, key: str, res: engine.TurnResult, st: TurnStatus) -> None:
         if res.cancelled:
@@ -745,6 +839,7 @@ async def amain() -> None:
     dp.update.outer_middleware(outer)
     interval = max(60, cfg.get_int("TG_PROBE_INTERVAL", 900))
     probe = asyncio.create_task(door.topics.probe_loop(interval))
+    loops = [asyncio.create_task(door.heartbeat_loop()), asyncio.create_task(door.jobs_loop())]
     log_.info("polling; home=%s", door.home)
     try:
         await dp.start_polling(bot, allowed_updates=ALLOWED_UPDATES, handle_as_tasks=False)
@@ -754,6 +849,8 @@ async def amain() -> None:
         # next start tells those conversations that the task was interrupted.
         door.stopping = True
         probe.cancel()
+        for t in loops:
+            t.cancel()
         for t in list(door.running.values()):
             t.cancel.set()
         pending = [t for t in door.tasks if not t.done()]

@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from . import memory
 from .config import Config
 
 
@@ -26,7 +27,9 @@ def stamp(cfg: Config, now: datetime | None = None) -> str:
     return f"[{now:%d.%m.%Y %H:%M}, {now:%A} · {zone}]"
 
 
-def base_system_prompt(cfg: Config) -> str:
+def base_system_prompt(cfg: Config, key: str | None = None, provider: str | None = None) -> str:
+    """What every turn is told, whatever the door. `key` adds the conversation's own rules
+    (state/personas/<key>.md); provider "codex" adds the memory index, which Claude Code loads by itself."""
     ident = cfg.identity()
     name = cfg.agent_name()
     who = (f"You are {name}, a personal agent" if cfg.has_name() else
@@ -48,4 +51,18 @@ def base_system_prompt(cfg: Config) -> str:
     persona = str(ident.get("persona") or "").strip()
     if persona:
         parts.append(persona[:8000])
+    if key:
+        path = memory.persona_path(cfg.home, key)
+        rules = memory.persona_text(cfg.home, key)
+        if rules:
+            parts.append(f"Rules the owner gave THIS conversation (from {path}; keep that file up to date when "
+                         f"they change):\n{rules}")
+        else:
+            parts.append(f"This conversation has no rules of its own yet. When the owner gives it a purpose or "
+                         f"rules (\"this topic is for X, answer short\"), write them to {path}.")
+    if provider == "codex":
+        index = memory.index_text(cfg.home)
+        where = memory.memory_dir(cfg.home)
+        parts.append(f"Your long-term memory is in {where} (one fact per file, index {memory.INDEX}). "
+                     + (f"The index:\n{index}" if index else "It is empty so far."))
     return "\n\n".join(parts)
