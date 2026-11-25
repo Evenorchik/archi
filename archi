@@ -27,6 +27,14 @@ Matrix (for the agent, inside a turn)
   archi mx rooms [--deleted]         known rooms / conversations
   archi mx send "<text>" [--room R] [--notice]
 
+Durable jobs (work that must outlive the turn; the result comes back as a new turn)
+  archi job run [--label L] [--cwd DIR] -- <command …>
+  archi job agent [--label L] [--provider claude|codex] "<task>"
+  archi job list | show <id> | cancel <id> [--reason R] | reap
+
+Self-learning loop
+  archi learn [status] | review [--conversation KEY] [--dry-run] | curate [--dry-run] | enable | disable
+
 Config
   archi config get KEY [--reveal]
   archi config set KEY VALUE
