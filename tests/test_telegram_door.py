@@ -504,3 +504,68 @@ def test_too_many_wrong_codes_revoke_the_pairing_code(tmp_path):
 
     go(scenario())
     assert door.cfg.owner_id() is None and door.cfg.get("PAIRING_CODE") == "" and api.calls == []
+
+
+# ------------------------------------------------------------------ an answer never vanishes
+def test_undelivered_answer_is_kept_and_sent_when_telegram_answers_again(tmp_path, monkeypatch):
+    from core import afterturn
+    calls = []
+    monkeypatch.setattr(afterturn, "turn_finished", lambda door, key, **kw: calls.append(kw["answer"]) or None)
+    door, api = make_door(tmp_path, FakeRunner("Here is the report."))
+    door.send_retry_s = (0, 0)
+    tries = []
+
+    def send(params):
+        if "Here is the report." in params.get("text", ""):
+            tries.append(1)
+            return TgError("network error: Cannot connect to host api.telegram.org", 0)
+        return {"message_id": 1}
+
+    api.fail["sendMessage"] = send
+
+    async def scenario():
+        await door.handle_update(dm("the report please"))
+        await settle(door)
+
+    go(scenario())
+    assert len(tries) == 3                                       # the first try and two retries
+    kept = list((tmp_path / "state" / "outbox").glob("telegram--*.json"))
+    assert len(kept) == 1 and (kept[0].stat().st_mode & 0o777) == 0o600 and calls == []
+    assert running.active(tmp_path) == []
+    api.fail.pop("sendMessage")
+    door2, api2 = make_door(tmp_path)                            # the next start delivers it
+    go(door2.flush_outbox())
+    texts = api2.texts()
+    assert texts[0].startswith("<i>(Delivered late: this answer was ready at") and texts[1] == "Here is the report."
+    assert not list((tmp_path / "state" / "outbox").glob("*.json")) and calls == ["Here is the report."]
+
+
+def test_command_reply_failure_is_logged_not_raised(tmp_path):
+    logs = []
+    door, api = make_door(tmp_path)
+    door.log = lambda *a: logs.append(" ".join(map(str, a)))
+    door.send_retry_s = (0,)
+    api.fail["sendMessage"] = TgError("network error: timeout", 0)
+
+    async def scenario():
+        await door.handle_update(dm("/help"))
+        await settle(door)
+
+    go(scenario())
+    assert any("message not delivered" in line for line in logs)
+    assert not (tmp_path / "state" / "outbox").exists()          # a command's reply is not an answer to keep
+
+
+def test_group_status_footer_says_the_answer_is_late():
+    from core.status import TurnStatus
+    from doors.telegram.live import LiveStatus
+    api = FakeApi()
+    st = TurnStatus()
+    live = LiveStatus(api, GROUP, 7, "group", st, log=lambda *a: None)
+    live.msg_id = 42
+    st.finish(TurnResult("x", "s", True))
+    go(live.done(True, "queued"))
+    edit = api.sent("editMessageText")[0]
+    assert edit["message_id"] == 42 and "could not be delivered yet" in edit["text"]
+    go(live.done(True, "delivered"))
+    assert api.sent("deleteMessage")[0]["message_id"] == 42

@@ -1,6 +1,7 @@
 """The Matrix door's ops side against a fake homeserver over real HTTP: homeserver discovery, `archi setup
 matrix`, the `archi mx` agent CLI, doors.matrix.notify, the unit, status and validation. All ids are made up."""
 import argparse
+import asyncio
 import io
 import json
 import os
@@ -35,6 +36,9 @@ class FakeHomeserver:
         self.encrypted_new_rooms = False
         self.forbid_rename = False
         self.fail_send = False
+        self.tokens = {TOKEN}
+        self.next_token = TOKEN
+        self.logins = []
         hs = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -42,9 +46,13 @@ class FakeHomeserver:
                 pass
 
             def _reply(self, status, body):
-                raw = json.dumps(body).encode()
+                ctype = "application/json"
+                if isinstance(body, bytes):
+                    raw, ctype = body, "application/octet-stream"
+                else:
+                    raw = json.dumps(body).encode()
                 self.send_response(status)
-                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(raw)))
                 self.end_headers()
                 self.wfile.write(raw)
@@ -53,7 +61,11 @@ class FakeHomeserver:
                 url = urllib.parse.urlsplit(self.path)
                 path = urllib.parse.unquote(url.path)
                 length = int(self.headers.get("Content-Length") or 0)
-                body = json.loads(self.rfile.read(length) or b"{}") if length else None
+                raw = self.rfile.read(length) if length else b""
+                try:
+                    body = json.loads(raw) if raw else None
+                except ValueError:
+                    body = raw
                 auth = self.headers.get("Authorization", "")
                 hs.requests.append((method, path, body, auth, urllib.parse.parse_qs(url.query)))
                 status, out = hs.route(method, path, body, auth)
@@ -84,11 +96,31 @@ class FakeHomeserver:
         if path == "/_matrix/client/versions":
             return 200, {"versions": ["v1.11", "v1.12"]}
         if path == "/_matrix/client/v3/login":
+            self.logins.append(body)
             if body.get("password") == PASSWORD and body["identifier"]["user"] in ("archi", BOT):
-                return 200, {"user_id": BOT, "access_token": TOKEN, "device_id": "DEV9"}
+                self.tokens.add(self.next_token)
+                return 200, {"user_id": BOT, "access_token": self.next_token, "device_id": body.get("device_id") or "DEV9"}
             return 403, {"errcode": "M_FORBIDDEN", "error": "Invalid username or password"}
-        if auth != f"Bearer {TOKEN}":
+        if auth not in {f"Bearer {t}" for t in self.tokens}:
             return 401, {"errcode": "M_UNKNOWN_TOKEN", "error": "Unknown access token"}
+        if path == "/_matrix/client/v3/logout":
+            self.tokens.discard(auth.split(" ", 1)[1])
+            return 200, {}
+        if path.startswith("/_matrix/client/v3/join/"):
+            return 200, {"room_id": path.rsplit("/", 1)[1]}
+        if path.endswith("/leave") or "/typing/" in path:
+            return 200, {}
+        if "/redact/" in path:
+            return 200, {"event_id": "$redaction"}
+        if path == "/_matrix/media/v3/upload":
+            return 200, {"content_uri": "mxc://example.org/media1"}
+        if path == "/_matrix/client/v1/media/download/example.org/media1":
+            return 200, b"\x89PNG-bytes"
+        if path == "/_matrix/client/v1/media/config":
+            return 200, {"m.upload.size": 1024}
+        if path.endswith("/members"):
+            return 200, {"chunk": [{"type": "m.room.member", "state_key": OWNER, "content": {"membership": "join"}},
+                                   {"type": "m.room.member", "state_key": BOT, "content": {"membership": "join"}}]}
         if path == "/_matrix/client/v3/account/whoami":
             return 200, {"user_id": BOT, "device_id": "DEV9"}
         if path == "/_matrix/client/v3/sync":
@@ -164,6 +196,63 @@ def test_login_and_whoami(hs):
     assert rooms["!plain:example.org"] == {"room_id": "!plain:example.org", "name": "Work", "membership": "join",
                                            "encrypted": False}
     assert rooms["!enc:example.org"]["encrypted"] is True and rooms["!enc:example.org"]["membership"] == "invite"
+
+
+def test_mx_api_never_puts_the_token_in_a_url(hs):
+    """Every request of the door's client (nio's typed calls and the raw ones) authenticates with the
+    Authorization header; the query string never carries the token (proxy logs, deprecated since v1.11)."""
+    from doors.matrix.api import MxApi
+
+    async def scenario():
+        api = MxApi(hs.url, BOT, TOKEN, "DEV9")
+        try:
+            assert (await api.whoami())["user_id"] == BOT
+            assert (await api.sync(None, 0, {"room": {"timeline": {"limit": 1}}}))["next_batch"] == "s9"
+            assert await api.join("!plain:example.org") == "!plain:example.org"
+            await api.leave("!plain:example.org")
+            assert await api.send("!plain:example.org", "m.room.message", {"msgtype": "m.text", "body": "x"}) == "$sent"
+            await api.redact("!plain:example.org", "$sent")
+            await api.typing("!plain:example.org", True, 1000)
+            assert await api.upload(b"\x89PNG-bytes", "image/png", "a.png") == "mxc://example.org/media1"
+            assert await api.download("mxc://example.org/media1") == b"\x89PNG-bytes"
+            assert await api.upload_limit() == 1024
+            assert await api.create_room("New", [OWNER]) == "!made:example.org"
+            assert await api.members("!plain:example.org") == {OWNER: "join", BOT: "join"}
+            assert await api.state_event("!made:example.org", "m.room.encryption") is None
+        finally:
+            await api.close()
+
+    asyncio.run(scenario())
+    assert len(hs.requests) >= 13
+    for method, path, _body, auth, query in hs.requests:
+        assert "access_token" not in query, (method, path, query)
+        assert auth == f"Bearer {TOKEN}", (method, path)
+
+
+def test_mx_api_turns_transport_failures_into_mxerror():
+    from doors.matrix.api import MxApi
+    import socket
+    with socket.socket() as sock:                   # a port nothing listens on
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+
+    async def scenario():
+        api = MxApi(f"http://127.0.0.1:{port}", BOT, TOKEN)
+        errors = []
+        try:
+            for call in (lambda: api.whoami(), lambda: api.sync(None, 0),
+                         lambda: api.send("!r:example.org", "m.room.message", {"body": "x"}),
+                         lambda: api.join("!r:example.org"), lambda: api.download("mxc://example.org/x")):
+                try:
+                    await call()
+                except MxError as e:
+                    errors.append(e)
+        finally:
+            await api.close()
+        return errors
+
+    errors = asyncio.run(scenario())
+    assert len(errors) == 5 and all(e.errcode == "ARCHI_NETWORK" and e.status == 0 and e.transient for e in errors)
 
 
 # ------------------------------------------------------------------ archi setup matrix
@@ -389,3 +478,43 @@ def test_matrix_dry_start(tmp_path):
     res = subprocess.run([py, "-m", "doors.matrix", "--check"], capture_output=True, text=True, env=env, cwd=ROOT,
                          timeout=60)
     assert res.returncode == 0 and "door ok" in res.stdout and TOKEN not in res.stdout
+
+
+def test_setup_signs_the_same_device_in_again_and_logs_out_the_old_token(tmp_path, hs, units, monkeypatch):
+    for k, v in {"ARCHI_MATRIX_HOMESERVER": hs.url, "ARCHI_MATRIX_USER": "archi", "ARCHI_MATRIX_PASSWORD": PASSWORD,
+                 "ARCHI_MATRIX_OWNER": OWNER}.items():
+        monkeypatch.setenv(k, v)
+    cfg = Config(tmp_path)
+    setup.step_matrix(cfg, ni=True)
+    assert "device_id" not in hs.logins[0] and cfg.get("MATRIX_DEVICE_ID") == "DEV9"
+    hs.next_token = "tok-second"
+    setup.step_matrix(cfg, ni=True)
+    assert hs.logins[1]["device_id"] == "DEV9"                     # the same device, not one more
+    assert cfg.get("MATRIX_ACCESS_TOKEN") == "tok-second" and TOKEN not in hs.tokens   # old token logged out
+    logouts = [r for r in hs.requests if r[1] == "/_matrix/client/v3/logout"]
+    assert len(logouts) == 1 and logouts[0][3] == f"Bearer {TOKEN}"
+    monkeypatch.delenv("ARCHI_MATRIX_USER")
+    monkeypatch.delenv("ARCHI_MATRIX_PASSWORD")
+    hs.tokens.add("tok-third")
+    monkeypatch.setenv("ARCHI_MATRIX_TOKEN", "tok-third")          # a token given directly replaces it too
+    setup.step_matrix(cfg, ni=True)
+    assert cfg.get("MATRIX_ACCESS_TOKEN") == "tok-third" and "tok-second" not in hs.tokens
+    setup.step_matrix(cfg, ni=True)                                # the same token again: nothing logged out
+    assert "tok-third" in hs.tokens
+
+
+def test_cli_and_notify_never_post_where_the_owner_is_not(tmp_path, hs, monkeypatch):
+    monkeypatch.setenv("ARCHI_HOME", str(tmp_path))
+    cfg = configured(tmp_path, hs.url)
+    reg = Registry(tmp_path / "state")
+    reg.upsert("mx:!theirs:example.org", title="Theirs")
+    reg.update_chat("!theirs:example.org", door="mx", members={"@someone:example.org": "join"}, members_known=True)
+    reg.upsert("mx:!old:example.org", title="Old", state="deleted")
+    sends = len(hs.calls("/send/"))
+    rc, _out, err = mx(["send", "hello", "--room", "!theirs:example.org"])
+    assert rc == 1 and "owner is not in room" in err
+    assert notify.post(cfg, "mx:!theirs:example.org", "notice") is False
+    assert notify.post(cfg, "mx:!old:example.org", "notice") is False
+    assert len(hs.calls("/send/")) == sends                       # nothing reached the server
+    reg.update_chat("!theirs:example.org", members={OWNER: "join"})
+    assert notify.post(cfg, "mx:!theirs:example.org", "notice") is True

@@ -86,8 +86,22 @@ def cmd_rooms(args, cfg: Config, reg: Registry) -> int:
     return 0
 
 
+def owner_absent(reg: Registry, cfg: Config, room_id: str) -> bool:
+    """The door has seen this room's members and the owner is not among them (nothing may be posted there)."""
+    conv = reg.get(make_key("mx", room_id))
+    if conv is not None and conv.state == "deleted":
+        return True
+    meta = reg.chat(room_id)
+    owner = cfg.get("MATRIX_OWNER_ID").strip()
+    return bool(meta.get("members_known")) and (meta.get("members") or {}).get(owner) not in ("join", "invite")
+
+
 def cmd_send(args, cfg: Config, reg: Registry) -> int:
     room_id = _room(args)
+    if owner_absent(reg, cfg, room_id):
+        print(f"not sent: the owner is not in room {room_id} (or it is archived); nothing is posted there",
+              file=sys.stderr)
+        return 1
     text = args.text if args.text != "-" else sys.stdin.read()
     if not text.strip():
         raise SystemExit("nothing to send")

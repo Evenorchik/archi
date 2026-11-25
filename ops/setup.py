@@ -459,9 +459,10 @@ def step_voice(cfg: Config, ni: bool, *, remove: bool = False, key_from_stdin: b
 
 # =========================================================================================== matrix
 
-def matrix_login(api, user: str, password: str) -> dict:
-    """Password -> access token. The password is used for this one request and never stored."""
-    res = api.login(user, password, device_name="Archi")
+def matrix_login(api, user: str, password: str, device_id: str = "") -> dict:
+    """Password -> access token. The password is used for this one request and never stored. With the device
+    id of an earlier sign-in the server signs that device in again instead of adding one more."""
+    res = api.login(user, password, device_name="Archi", device_id=device_id)
     if not res.get("access_token"):
         raise SetupError("the homeserver accepted the login but returned no access token")
     return res
@@ -474,6 +475,7 @@ def step_matrix(cfg: Config, ni: bool) -> None:
     from . import service
 
     current = cfg.get("MATRIX_HOMESERVER")
+    prev_token = cfg.get("MATRIX_ACCESS_TOKEN")
     if ni:
         server = os.environ.get("ARCHI_MATRIX_HOMESERVER", "").strip() or current
         if not server:
@@ -490,7 +492,8 @@ def step_matrix(cfg: Config, ni: bool) -> None:
 
     token = os.environ.get("ARCHI_MATRIX_TOKEN", "").strip() if ni else ""
     login: dict = {}
-    old_token = cfg.get("MATRIX_ACCESS_TOKEN") if base == current else ""
+    old_token = prev_token if base == current else ""
+    device_id = cfg.get("MATRIX_DEVICE_ID") if base == current else ""
     if not token and old_token and not ni and term.ask_yes("  Keep the bot's current sign-in?", True):
         token = old_token
     if not token:
@@ -503,7 +506,7 @@ def step_matrix(cfg: Config, ni: bool) -> None:
                 token = old_token
             else:
                 try:
-                    login = matrix_login(SyncApi(base), user, password)
+                    login = matrix_login(SyncApi(base), user, password, device_id)
                 except MxError as e:
                     raise SetupError(f"the bot could not sign in: {e}") from None
         else:
@@ -513,7 +516,7 @@ def step_matrix(cfg: Config, ni: bool) -> None:
                 if not user or not password:
                     continue
                 try:
-                    login = matrix_login(SyncApi(base), user, password)
+                    login = matrix_login(SyncApi(base), user, password, device_id)
                     break
                 except MxError as e:
                     say(f"  ✗ Sign-in failed: {e}")
@@ -542,6 +545,15 @@ def step_matrix(cfg: Config, ni: bool) -> None:
     cfg.update({"MATRIX_HOMESERVER": base, "MATRIX_USER_ID": bot, "MATRIX_ACCESS_TOKEN": token,
                 "MATRIX_DEVICE_ID": device, "MATRIX_OWNER_ID": owner})
     say(f"  ✓ Saved to {cfg.path}: the bot {bot} answers only {owner}")
+    if prev_token and prev_token != token:
+        # The replaced sign-in is logged out, so no forgotten token stays valid. A running door finds the new
+        # token in the config when the old one is refused.
+        try:
+            SyncApi(current or base, prev_token).logout()
+            say("  ✓ The previous sign-in of the bot was logged out")
+        except MxError as e:
+            if not e.fatal:
+                say(f"  ! The previous sign-in could not be logged out ({e}); it stays valid until you remove it")
 
     try:
         rooms = SyncApi(base, token).rooms()

@@ -73,7 +73,8 @@ class LiveStatus:
     def poke(self) -> None:
         self._wake.set()
 
-    async def stop(self, ok: bool) -> None:
+    async def finish(self) -> None:
+        """The turn ended: stop updating (the final state is shown by done(), after the delivery)."""
         for t in (self._task, self._typing):
             if t:
                 t.cancel()
@@ -81,16 +82,27 @@ class LiveStatus:
                     await t
                 except (asyncio.CancelledError, Exception):
                     pass
+
+    async def done(self, ok: bool, outcome: str = "delivered") -> None:
+        """After the delivery: the status message goes when the owner has the answer, else it becomes a footer
+        that says what happened."""
         if self.msg_id is None:
             return
         try:
-            if ok:
+            if ok and outcome == "delivered":
                 await self.api.call("deleteMessage", chat_id=self.chat_id, message_id=self.msg_id)
             else:
+                line = self.st.footer()
+                if outcome == "queued":
+                    line += " · the answer could not be delivered yet; it is sent as soon as Telegram answers again"
                 await self.api.call("editMessageText", chat_id=self.chat_id, message_id=self.msg_id,
-                                    text=f"<i>{render.escape(self.st.footer())}</i>", parse_mode="HTML")
+                                    text=f"<i>{render.escape(line)}</i>", parse_mode="HTML")
         except TgError as e:
             self.log("status cleanup failed", e.description)
+
+    async def stop(self, ok: bool) -> None:
+        await self.finish()
+        await self.done(ok, "delivered" if ok else "failed")
 
     # ------------------------------------------------------------------ loops
     async def _loop(self) -> None:

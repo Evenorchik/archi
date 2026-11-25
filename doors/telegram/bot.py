@@ -22,8 +22,8 @@ from pathlib import Path
 from core import voice
 from core.config import Config
 from core.conversations import Conversation, Registry, make_key, parse_key
-from core.door import (KEY_REQUEST, KEY_REQUEST_EN, BaseDoor, RunningTurn, command_list,  # noqa: F401
-                       parse_model_args)
+from core.door import (KEY_REQUEST, KEY_REQUEST_EN, BaseDoor, RunningTurn, SendFailed,  # noqa: F401
+                       command_list, parse_model_args)
 from core.inbox import file_prompt
 from core.prompt import base_system_prompt
 from core.status import TurnStatus
@@ -96,6 +96,7 @@ class Door(BaseDoor):
         self.check_downtime()
         self.heartbeat()
         await self._report_interrupted()
+        await self.flush_outbox()               # answers a previous process could not deliver
 
     # ================================================================== dispatch
     async def handle_update(self, upd: dict) -> None:
@@ -346,11 +347,18 @@ class Door(BaseDoor):
     def make_live(self, conv: Conversation, st: TurnStatus, src=None) -> LiveStatus:
         return LiveStatus(self.api, conv.chat_id, conv.thread_id, conv.kind, st, log=self.log)
 
-    def job_fallback(self, conv: Conversation) -> str | None:
+    async def job_fallback(self, conv: Conversation) -> str | None:
         """A deleted topic reports a finished job in the main part of the same chat."""
         key = make_key("tg", conv.chat_id, None)
         self.registry.ensure(key, kind=conv.kind, state="open", title="main")
         return key
+
+    def is_transient(self, err: BaseException) -> bool:
+        """No network (code 0), flood control (429) or a Telegram server error: worth another try."""
+        return isinstance(err, TgError) and (err.code == 0 or err.code == 429 or err.code >= 500)
+
+    def retry_after(self, err: BaseException) -> float | None:
+        return getattr(err, "retry_after", None)
 
     # ================================================================== downtime
     @property
@@ -401,7 +409,7 @@ class Door(BaseDoor):
     async def send_voice(self, key: str, ogg: Path) -> bool:
         _door, chat, thread = parse_key(key)
         try:
-            await media.send_voice(self.api, int(chat), thread, ogg)
+            await self.retrying(lambda: media.send_voice(self.api, int(chat), thread, ogg), what="voice note")
         except TgError as e:
             return await self._send_failed(key, e)
         return True
@@ -409,33 +417,48 @@ class Door(BaseDoor):
     async def send_file(self, key: str, path: str) -> bool:
         _door, chat, thread = parse_key(key)
         try:
-            problem = await media.send_file(self.api, int(chat), thread, path)
+            problem = await self.retrying(lambda: media.send_file(self.api, int(chat), thread, path), what="file")
         except TgError as e:
             if not await self._send_failed(key, e):
                 return False
             problem = f"⚠️ Could not send {path}: {e.description}"
         if problem:
-            await self.send_text(key, problem)
+            return await self.send_text(key, problem, strict=True)
         return True
 
-    async def send_text(self, key: str, md: str) -> bool:
-        """Markdown -> Telegram messages in the conversation's topic. False if the topic is gone."""
+    async def send_text(self, key: str, md: str, *, strict: bool = False) -> bool:
+        """Markdown -> Telegram messages in the conversation's topic. False if the topic is gone. A message that
+        still fails for a passing reason after the retries raises SendFailed with the pieces not sent (strict:
+        a turn's answer, kept for later) or is logged (a command's reply)."""
         _door, chat, thread = parse_key(key)
-        for part in render.render_messages(md):
+        pieces = render.split_markdown(md, limit=render.LIMIT - 196)
+        for i, piece in enumerate(pieces):
             try:
-                await self.api.call("sendMessage", chat_id=int(chat), message_thread_id=thread, text=part,
-                                    parse_mode="HTML", link_preview_options={"is_disabled": True})
-            except TgError as e:
-                if e.bad_markup:
-                    try:
-                        await self.api.call("sendMessage", chat_id=int(chat), message_thread_id=thread,
-                                            text=render.strip_html(part))
-                        continue
-                    except TgError as e2:
-                        e = e2
-                if not await self._send_failed(key, e):
-                    return False
+                for part in render.render_messages(piece):
+                    if not await self._send_part(key, int(chat), thread, part):
+                        return False
+            except SendFailed as e:
+                if strict:
+                    raise SendFailed(e.reason, remaining=pieces[i:]) from None
+                self.log("message not delivered", key, e.reason)
+                return True
         return True
+
+    async def _send_part(self, key: str, chat: int, thread: int | None, part: str) -> bool:
+        try:
+            await self.retrying(lambda: self.api.call("sendMessage", chat_id=chat, message_thread_id=thread,
+                                                      text=part, parse_mode="HTML",
+                                                      link_preview_options={"is_disabled": True}))
+            return True
+        except TgError as e:
+            if e.bad_markup:
+                try:
+                    await self.retrying(lambda: self.api.call("sendMessage", chat_id=chat, message_thread_id=thread,
+                                                              text=render.strip_html(part)))
+                    return True
+                except TgError as e2:
+                    e = e2
+            return await self._send_failed(key, e)
 
     async def _send_plain(self, chat_id: int, thread: int | None, text: str) -> None:
         await self.api.call("sendMessage", chat_id=chat_id, message_thread_id=thread, text=text)
@@ -480,7 +503,8 @@ async def amain() -> None:
     dp.update.outer_middleware(outer)
     interval = max(60, cfg.get_int("TG_PROBE_INTERVAL", 900))
     probe = asyncio.create_task(door.topics.probe_loop(interval))
-    loops = [asyncio.create_task(door.heartbeat_loop()), asyncio.create_task(door.jobs_loop())]
+    loops = [asyncio.create_task(door.heartbeat_loop()), asyncio.create_task(door.jobs_loop()),
+             asyncio.create_task(door.outbox_loop())]
     log_.info("polling; home=%s", door.home)
     try:
         await dp.start_polling(bot, allowed_updates=ALLOWED_UPDATES, handle_as_tasks=False)

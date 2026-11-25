@@ -39,6 +39,10 @@ class FakeMx:
         self.sync_calls = []
         self.limit = None
         self.n = 0
+        self.token = "tok"
+        self.members_of = {}       # room -> {user: membership}; default: the owner and the bot joined
+        self.txns = []
+        self.created = []
 
     def _maybe_fail(self, method, *args):
         rule = self.fail.get(method)
@@ -54,11 +58,28 @@ class FakeMx:
         self.sync_calls.append((since, timeout_ms))
         return self.syncs.pop(0) if self.syncs else {"next_batch": since or "s0"}
 
-    async def send(self, room_id, event_type, content):
+    async def send(self, room_id, event_type, content, txn=None):
+        self.txns.append(txn)
         self._maybe_fail("send", room_id, event_type, content)
         self.n += 1
         self.sent.append((room_id, event_type, content))
         return f"$ev{self.n}"
+
+    def set_token(self, token):
+        self.token = token
+
+    async def members(self, room_id):
+        self._maybe_fail("members", room_id)
+        return dict(self.members_of.get(room_id, {OWNER: "join", BOT: "join"}))
+
+    async def create_room(self, name, invite):
+        self._maybe_fail("create_room", name)
+        room = f"!made{len(self.created) + 1}:example.org"
+        self.created.append((room, name, list(invite)))
+        return room
+
+    async def state_event(self, room_id, event_type, state_key=""):
+        return None
 
     async def redact(self, room_id, event_id, reason=None):
         self._maybe_fail("redact", room_id, event_id)
@@ -125,6 +146,8 @@ def make_door(tmp_path, runner=None, owner=OWNER, **values):
     api = FakeMx()
     door = Door(api, cfg, Registry(tmp_path / "state"), runner=runner or FakeRunner(), log=lambda *a: None,
                 debounce_s=0, album_s=0)
+    door.send_retry_s = (0, 0)
+    door.join_retry_s = (0.01, 0.01, 0.01)
     return door, api
 
 
@@ -261,6 +284,7 @@ def test_rename_owner_leave_and_kick(tmp_path):
 
 def test_room_the_owner_already_left_is_not_kept(tmp_path):
     door, api = make_door(tmp_path)
+    api.members_of[ROOM] = {BOT: "join"}
     run_sync(door, joined(ROOM, state=[name_ev("Old"), member(OWNER, "leave")]))
     assert door.registry.get(KEY) is None and api.left == [ROOM] and api.sent == []
 
@@ -273,8 +297,7 @@ def test_owner_leaving_and_coming_back_in_one_window_keeps_the_room(tmp_path):
     assert api.left == [] and door.registry.get(KEY).state == "open" and len(runner.calls) == 1
 
 
-def test_failed_join_is_retried_in_the_background(tmp_path, monkeypatch):
-    monkeypatch.setattr("doors.matrix.bot.JOIN_RETRY_S", (0.01, 0.01, 0.01))
+def test_failed_join_is_retried_in_the_background(tmp_path):
     door, api = make_door(tmp_path)
     attempts = []
 
@@ -323,6 +346,8 @@ def test_owner_message_runs_a_turn(tmp_path):
     assert answer == {"msgtype": "m.text", "body": "**Done**", "format": "org.matrix.custom.html",
                       "formatted_body": "<p><b>Done</b></p>"}
     assert api.reactions() == [("$own1", "⏳"), ("$own1", "✅")]
+    kinds = [(t, c.get("body") or (c.get("m.relates_to") or {}).get("key")) for _r, t, c in api.sent]
+    assert kinds.index(("m.room.message", "**Done**")) < kinds.index(("m.reaction", "✅"))   # ✅ after delivery
     assert len(api.redactions) == 1                          # the ⏳ was taken back
     assert api.edits() == []                                 # a quick answer gets no status notice
     assert door.registry.get(KEY).sessions == {"claude": "sess-1"}
@@ -680,10 +705,10 @@ def test_run_marker_covers_delivery_and_survives_shutdown(tmp_path):
     door, api = make_door(tmp_path)
     original = api.send
 
-    async def send(room_id, event_type, content):
+    async def send(room_id, event_type, content, txn=None):
         if content.get("body") == "Hi from the agent":
             seen.append([m["key"] for m in running.active(tmp_path)])
-        return await original(room_id, event_type, content)
+        return await original(room_id, event_type, content, txn)
 
     api.send = send
     run_sync(door, joined(ROOM, msg("hello")))
@@ -705,12 +730,17 @@ def test_run_marker_covers_delivery_and_survives_shutdown(tmp_path):
     assert [m["key"] for m in running.active(tmp_path / "b")] == [KEY]
 
 
+def _private(door, room, owner_membership="join", **extra):
+    door.registry.update_chat(room, door="mx", members={OWNER: owner_membership}, members_known=True, **extra)
+
+
 def test_finished_jobs_are_reported_by_a_turn(tmp_path, monkeypatch):
     runner = FakeRunner("The backup finished.")
     door, api = make_door(tmp_path, runner)
     door.registry.upsert(KEY, title="Server", state="open", last_turn_at=100.0)
     door.registry.upsert(KEY2, title="Recent", state="open", last_turn_at=200.0)
     door.registry.upsert(KEY3, title="Gone", state="deleted")
+    _private(door, ROOM2)
     queue = [{"id": "j1", "conversation": KEY, "state": "ok", "label": "backup"},
              {"id": "j2", "conversation": KEY3, "state": "failed", "label": "build"},
              {"id": "j3", "conversation": "mx:!unknown:example.org", "state": "ok", "label": "x"}]
@@ -722,14 +752,75 @@ def test_finished_jobs_are_reported_by_a_turn(tmp_path, monkeypatch):
 
     async def scenario():
         assert await door.report_jobs() == 2
+        assert reported == ["j3"]                       # nowhere to report: marked; the others only once delivered
         await settle(door)
         assert await door.report_jobs() == 0
 
     go(scenario())
-    assert reported == ["j1", "j2", "j3"]
+    assert sorted(reported) == ["j1", "j2", "j3"]
     by_room = {c["env"]["ARCHI_CONVERSATION"]: c["prompt"] for c in runner.calls}
-    assert by_room[KEY].endswith("[job j1 ok]") and by_room[KEY2].endswith("[job j2 failed]")   # most recent room
+    assert by_room[KEY].endswith("[job j1 ok]") and by_room[KEY2].endswith("[job j2 failed]")   # private room
     assert len(runner.calls) == 2
+
+
+def test_job_fallback_is_private_or_a_new_room(tmp_path):
+    door, api = make_door(tmp_path)
+    for key, room, title, members in ((KEY, ROOM, "Shared", {OWNER: "join", STRANGER: "join"}),
+                                      (KEY2, ROOM2, "Owner left", {STRANGER: "join"})):
+        door.registry.upsert(key, title=title, state="open", last_turn_at=time.time())
+        door.registry.update_chat(room, door="mx", members=members, members_known=True)
+    door.registry.upsert(KEY3, title="Gone", state="deleted")
+    gone = door.registry.get(KEY3)
+    made = go(door.job_fallback(gone))
+    assert made == "mx:!made1:example.org" and api.created == [("!made1:example.org", "Archi: background jobs", [OWNER])]
+    conv = door.registry.get(made)
+    assert conv.state == "open" and door.registry.chat("!made1:example.org")["created_by_agent"] is True
+    assert go(door.job_fallback(gone)) == made and len(api.created) == 1     # reused while the owner has not joined
+    _private(door, "!r9:example.org")
+    door.registry.upsert("mx:!r9:example.org", title="Mine", state="open", last_turn_at=1.0)
+    assert go(door.job_fallback(gone)) == "mx:!r9:example.org"               # a joined private room comes first
+
+
+def test_nothing_is_posted_where_the_owner_is_not(tmp_path):
+    runner = FakeRunner()
+    door, api = make_door(tmp_path, runner)
+    api.members_of[ROOM] = {BOT: "join", STRANGER: "join"}
+    go(door.handle_sync(joined(ROOM, state=[name_ev("Not mine")]), initial=True))   # found at the first start
+    assert api.left == [ROOM] and door.registry.get(KEY) is None
+    door.registry.upsert(KEY2, title="Theirs", state="open")
+    door.registry.update_chat(ROOM2, door="mx", members={STRANGER: "join"}, members_known=True)
+    assert go(door.send_text(KEY2, "hello")) is False and api.sent == []
+    running.start("matrix", KEY2, tmp_path, pid=DEAD_PID)
+    go(door._report_interrupted())
+    assert api.sent == []
+
+
+def test_job_report_is_marked_only_after_delivery_and_offered_again_after_a_stop(tmp_path, monkeypatch):
+    runner = FakeRunner(wait_cancel=True)
+    door, api = make_door(tmp_path, runner)
+    door.registry.upsert(KEY, title="Server", state="open")
+    queue = [{"id": "j1", "conversation": KEY, "state": "ok", "label": "backup"}]
+    reported = []
+    monkeypatch.setattr(jobs, "finished_unreported", lambda d, home=None: [j for j in queue if j["id"] not in reported])
+    monkeypatch.setattr(jobs, "mark_reported", lambda job_id, home=None: reported.append(job_id))
+    monkeypatch.setattr(jobs, "report_prompt", lambda job: f"[job {job['id']}]")
+
+    async def scenario():
+        assert await door.report_jobs() == 1
+        await asyncio.wait_for(runner.started.wait(), 5)
+        assert await door.report_jobs() == 0             # its report turn is running: not offered twice
+        assert reported == []
+        door.stopping = True                             # the door stops before the report was delivered
+        for t in list(door.running.values()):
+            t.cancel.set()
+        await settle(door)
+
+    go(scenario())
+    assert reported == [] and door._reporting == set()
+    door2, api2 = make_door(tmp_path, FakeRunner("Backup done."))
+    go(door2.report_jobs())
+    go(settle(door2))
+    assert reported == ["j1"] and any("Backup done." in t for t in api2.texts(ROOM))
 
 
 def test_attachment_parsing():
@@ -740,3 +831,250 @@ def test_attachment_parsing():
     assert media.attachment({"msgtype": "m.file", "body": "y", "url": "https://evil"}) is None
     assert media.attachment({"msgtype": "m.audio", "body": "song.mp3", "url": "mxc://e/2"}).kind == "audio"
     assert media.image_size(PNG) == (640, 480) and media.image_size(b"nope") is None
+
+
+# ------------------------------------------------------------------ fix round: delivery never loses an answer
+def net_down(*_a):
+    return MxError("ARCHI_NETWORK", "send: ClientConnectorError: connection refused", 0)
+
+
+def test_transient_send_failure_is_retried_with_one_transaction(tmp_path):
+    door, api = make_door(tmp_path, FakeRunner("Done."))
+    tries = []
+    original = api.send
+
+    async def send(room_id, event_type, content, txn=None):
+        if content.get("body") == "Done.":
+            tries.append(txn)
+            if len(tries) < 3:
+                raise net_down()
+        return await original(room_id, event_type, content, txn)
+
+    api.send = send
+    run_sync(door, joined(ROOM, msg("hello", eid="$h")))
+    assert len(tries) == 3 and tries[0] and len(set(tries)) == 1      # one message, retried under one txn
+    assert [c["body"] for c in api.messages(ROOM, "m.text")].count("Done.") == 1
+    assert api.reactions()[-1] == ("$h", "✅") and not (tmp_path / "state" / "outbox").exists()
+
+
+def test_undelivered_answer_is_kept_and_delivered_when_the_server_is_back(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(afterturn, "turn_finished", lambda door, key, **kw: calls.append(kw["answer"]) or None)
+    door, api = make_door(tmp_path, FakeRunner("The report is ready."))
+    order = []
+    original = api.send
+
+    async def send(room_id, event_type, content, txn=None):
+        order.append((event_type, content.get("body") or (content.get("m.relates_to") or {}).get("key")))
+        return await original(room_id, event_type, content, txn)
+
+    api.send = send
+    api.fail["send"] = lambda r, t, c: net_down() if t == "m.room.message" and c.get("body") == "The report is ready." else None
+    run_sync(door, joined(ROOM, msg("make the report", eid="$m")))
+    kept = list((tmp_path / "state" / "outbox").glob("matrix--*.json"))
+    assert len(kept) == 1 and (kept[0].stat().st_mode & 0o777) == 0o600
+    assert (kept[0].parent.stat().st_mode & 0o777) == 0o700
+    record = json.loads(kept[0].read_text())
+    assert record["key"] == KEY and record["items"][-1] == ["text", "The report is ready."]
+    assert record["mark"]["src"] == "$m" and record["mark"]["reaction"]
+    assert api.reactions()[-1] == ("$m", "⚠️") and calls == []          # not delivered: no ✅, no learning hook
+    assert running.active(tmp_path) == []
+
+    api.fail.pop("send")                                                # the homeserver answers again
+    assert go(door.flush_outbox()) == 1
+    texts = api.texts(ROOM)
+    assert texts[-2].startswith("_(Delivered late: this answer was ready at") and texts[-1] == "The report is ready."
+    assert api.reactions()[-1] == ("$m", "✅") and record["mark"]["reaction"] in [r for _room, r in api.redactions]
+    assert not list((tmp_path / "state" / "outbox").glob("*.json")) and calls == ["The report is ready."]
+
+
+def test_kept_answer_is_delivered_at_the_next_start(tmp_path):
+    door, api = make_door(tmp_path, FakeRunner("Answer one."))
+    api.fail["send"] = lambda r, t, c: net_down() if c.get("body") == "Answer one." else None
+    run_sync(door, joined(ROOM, msg("q1")))
+    assert len(list((tmp_path / "state" / "outbox").glob("*.json"))) == 1
+    door2, api2 = make_door(tmp_path)
+    go(door2.startup())
+    assert api2.texts(ROOM)[-1] == "Answer one." and not list((tmp_path / "state" / "outbox").glob("*.json"))
+
+
+def test_a_broken_send_path_keeps_the_answer_and_logs(tmp_path):
+    logs = []
+    door, api = make_door(tmp_path, FakeRunner("x"))
+    door.log = lambda *a: logs.append(" ".join(map(str, a)))
+
+    async def boom(key, md, **kw):
+        raise RuntimeError("renderer exploded")
+
+    door.send_text = boom
+    run_sync(door, joined(ROOM, msg("hello")))
+    assert len(list((tmp_path / "state" / "outbox").glob("*.json"))) == 1
+    assert any("renderer exploded" in line for line in logs) and running.active(tmp_path) == []
+
+
+def test_background_task_errors_are_logged(tmp_path):
+    logs = []
+    door, api = make_door(tmp_path)
+    door.log = lambda *a: logs.append(" ".join(map(str, a)))
+
+    async def bad():
+        raise ValueError("lost in the background")
+
+    async def scenario():
+        door.spawn(bad())
+        await asyncio.sleep(0)
+        await settle(door)
+
+    go(scenario())
+    assert any("lost in the background" in line for line in logs)
+
+
+def test_image_download_failure_replies_and_leaves_no_temp_files(tmp_path, monkeypatch):
+    made = []
+    real = media.temp_file
+    monkeypatch.setattr(media, "temp_file", lambda data, suffix: made.append(real(data, suffix)) or made[-1])
+    runner = FakeRunner()
+    door, api = make_door(tmp_path, runner)
+    api.media["mxc://example.org/ok"] = PNG
+
+    async def download(mxc):
+        if mxc == "mxc://example.org/ok":
+            return PNG
+        raise MxError("ARCHI_NETWORK", "download: ServerDisconnectedError", 0)
+
+    api.download = download
+
+    async def failing_turn(*a, **kw):
+        raise RuntimeError("the turn crashed")
+
+    door.turn = failing_turn
+    run_sync(door, joined(ROOM, media_msg("m.image", body="a.png", url="mxc://example.org/ok",
+                                          info={"mimetype": "image/png", "size": 70}),
+                          media_msg("m.image", body="b.png", url="mxc://example.org/broken",
+                                    info={"mimetype": "image/png", "size": 70})))
+    assert len(made) == 1 and not made[0].exists()          # removed even though the turn crashed
+
+
+def test_encrypted_room_left_even_when_the_network_hiccups(tmp_path):
+    door, api = make_door(tmp_path)
+    leaves = []
+
+    async def leave(room_id):
+        leaves.append(room_id)
+        if len(leaves) == 1:
+            raise MxError("ARCHI_NETWORK", "leave: connection reset", 0)
+        api.left.append(room_id)
+
+    api.leave = leave
+    api.fail["send"] = lambda r, t, c: net_down()
+
+    async def scenario():
+        await door.handle_sync(invited(ROOM, OWNER, name="Secret", encrypted=True))
+        await asyncio.wait(list(door.background), timeout=5)
+
+    go(scenario())
+    assert leaves == [ROOM, ROOM] and api.left == [ROOM]
+
+
+def test_second_invite_into_the_same_encrypted_room_is_explained_again(tmp_path):
+    door, api = make_door(tmp_path)
+    run_sync(door, invited(ROOM, OWNER, name="Secret", encrypted=True))
+    run_sync(door, invited(ROOM, OWNER, name="Secret", encrypted=True))
+    assert api.joined == [ROOM, ROOM] and api.left == [ROOM, ROOM]
+    assert api.texts(ROOM) == [ENCRYPTED_NOTICE, ENCRYPTED_NOTICE]
+
+
+def test_only_a_state_event_makes_a_room_encrypted(tmp_path):
+    runner = FakeRunner()
+    door, api = make_door(tmp_path, runner)
+    fake = ev("m.room.encryption", {"algorithm": "m.megolm.v1.aes-sha2"})          # no state_key: not state
+    run_sync(door, joined(ROOM, fake, msg("still readable"), state=[name_ev("Plain")]))
+    assert api.left == [] and door.registry.get(KEY).state == "open" and len(runner.calls) == 1
+    assert ENCRYPTED_NOTICE not in api.texts(ROOM)
+
+
+def test_corrupt_encrypted_attachment_gets_a_reply(tmp_path):
+    from nio.crypto.attachments import encrypt_attachment
+    door, api = make_door(tmp_path)
+    cipher, keys = encrypt_attachment(b"secret notes")
+    api.media["mxc://example.org/enc"] = cipher[:-1] + bytes([cipher[-1] ^ 1])          # hash no longer matches
+    run_sync(door, joined(ROOM, media_msg("m.file", body="notes.txt", file={
+        "url": "mxc://example.org/enc", "key": keys["key"], "iv": keys["iv"], "hashes": keys["hashes"], "v": "v2"})))
+    assert any("could not download the file" in t and "decrypted" in t for t in api.texts(ROOM))
+
+
+def test_first_notice_in_flight_still_becomes_the_footer():
+    async def scenario():
+        api = FakeMx()
+        original = api.send
+
+        async def slow_send(room_id, event_type, content, txn=None):
+            if content.get("msgtype") == "m.notice" and "m.relates_to" not in content:
+                await asyncio.sleep(0.3)                 # the first notice is still on its way when the turn ends
+            return await original(room_id, event_type, content, txn)
+
+        api.send = slow_send
+        st = TurnStatus()
+        live = LiveStatus(api, ROOM, "$src", st, log=lambda *a: None, delay=0.05, edit_min=0.1, tick=30,
+                          typing_every=30)
+        await live.start()
+        await asyncio.sleep(0.15)
+        st.finish(TurnResult("x", "s", True))
+        await live.finish()
+        await live.done(True, "delivered")
+        return api, live
+
+    api, live = go(scenario())
+    assert live.notice_id is not None
+    footer = api.edits()[-1]
+    assert footer["m.relates_to"]["event_id"] == live.notice_id and footer["m.new_content"]["body"].startswith("✅ Done")
+
+
+def test_rejected_token_replaced_in_the_config_is_adopted(tmp_path):
+    door, api = make_door(tmp_path)
+    calls = []
+
+    async def sync(since, timeout_ms, sync_filter=None):
+        calls.append(api.token)
+        if api.token == "tok":
+            door.cfg.set("MATRIX_ACCESS_TOKEN", "tok-new")          # `archi setup matrix` ran meanwhile
+            raise MxError("M_UNKNOWN_TOKEN", "Unknown access token", 401)
+        raise asyncio.CancelledError
+
+    api.sync = sync
+    with pytest.raises(asyncio.CancelledError):
+        go(door.sync_loop())
+    assert calls == ["tok", "tok-new"]
+
+
+def test_send_refused_for_an_old_token_retries_with_the_new_one(tmp_path):
+    door, api = make_door(tmp_path, FakeRunner("Answer."))
+    tokens = []
+    original = api.send
+
+    async def send(room_id, event_type, content, txn=None):
+        if content.get("body") == "Answer.":
+            tokens.append(api.token)
+            if api.token == "tok":
+                door.cfg.set("MATRIX_ACCESS_TOKEN", "tok-rotated")
+                raise MxError("M_UNKNOWN_TOKEN", "Unknown access token", 401)
+        return await original(room_id, event_type, content, txn)
+
+    api.send = send
+    run_sync(door, joined(ROOM, msg("hi")))
+    assert tokens == ["tok", "tok-rotated"] and "Answer." in api.texts(ROOM)
+
+
+
+def test_room_the_agent_just_made_is_kept_until_the_owner_invite_arrives(tmp_path):
+    """The bot's sync can see a room while createRoom is still running: its join is there, the owner's invite
+    not yet. That is no reason to leave; posting waits until the owner's membership shows up."""
+    door, api = make_door(tmp_path)
+    door.registry.upsert(KEY, title="Made", state="open")
+    door.registry.update_chat(ROOM, door="mx", membership="join", created_by_agent=True)
+    api.members_of[ROOM] = {BOT: "join"}
+    run_sync(door, joined(ROOM, member(BOT, "join"), state=[name_ev("Made")]))
+    assert api.left == [] and door.registry.get(KEY).state == "open"
+    assert go(door.send_text(KEY, "too early")) is False and api.sent == []
+    run_sync(door, joined(ROOM, member(OWNER, "invite", sender=BOT)))
+    assert go(door.send_text(KEY, "now")) is True and api.texts(ROOM) == ["now"]
