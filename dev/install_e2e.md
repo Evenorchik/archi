@@ -28,9 +28,17 @@ Sign Claude Code in inside the container (`docker exec -it archi-e2e archi setup
   once, a transient `archi-restart-*` unit waited, the door kept running while the turn did and was
   restarted about a second after the turn ended.
 - `archi identity set-name`: config, CLAUDE.md and the bot's Telegram name changed (and were restored).
-- `archi update` with the container's `origin` pointed at the source checkout: fast-forward to a new commit,
-  requirements, validation with the new code, restart when idle.
+
+- `archi update` three times against new commits of the source: fast-forward with a local untracked file
+  kept, requirements, validation, restart when idle; then "Already up to date".
+- The interactive Claude sign-in, driven on a pty (`archi setup provider claude`) without completing OAuth:
+  the "sign in again?" question, `claude setup-token` drawn through the capture pty (screen text rendered
+  with its spaces), three Ctrl+C leaving it (it ignores a single Ctrl+C, Ctrl+D and Esc), the paste-the-token
+  fallback, then `claude auth login` showing its link and paste prompt. The credentials stayed untouched.
+- The Codex browser fallback in a throwaway container: the sign-in link captured from `codex login`, the
+  pasted callback delivered to its server on 127.0.0.1:1455 (a made-up code, so it did not finish).
 
 ## Not covered here (by hand with the owner)
-Pairing from a real Telegram account and the first-run message in Telegram, the interactive prompts
-(`claude setup-token` capture, Codex device and browser sign-in, the voice key prompt), a real conversation.
+Pairing from a real Telegram account and the first-run message in Telegram, completing a real
+`claude setup-token` (the token capture itself) and a Codex device or browser sign-in, the voice key
+prompt, a real conversation.
