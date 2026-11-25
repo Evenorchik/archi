@@ -75,20 +75,19 @@ def _turn_finished(door, key, *, provider, session_id, tool_calls, home: Path, p
         mem = every_turns > 0 and st["turns"] >= every_turns
         skl = cfg.get("skill_mode") != "off" and every_tools > 0 and st["tools"] >= every_tools
         kind = "combined" if mem and skl else "memory" if mem else "skill" if skl else None
-        if kind:
-            started = spawn_review(home, key, kind)
-            if started.ok:
-                if mem:
-                    st["turns"] = 0
-                if skl:
-                    st["tools"] = 0
-                st["last_review_started_at"] = time.time()
-            else:
-                # The counters keep growing, so the next turn tries again.
-                log.warning("learning review for %s not started: %s", key, started.error)
-                kind = None
         counters[key] = st
         learnlog.save_counters(home, counters)
+    if not kind:
+        return None
+    # Started outside the lock, which every conversation's hook needs: a slow systemd-run must not hold up
+    # the others. Turns of this conversation cannot run meanwhile (the door awaits this hook).
+    started = spawn_review(home, key, kind)
+    if not started.ok:
+        log.warning("learning review for %s not started: %s", key, started.error)
+        return None                    # the counters keep growing, so the next turn tries again
+    if started.warning:
+        log.warning("learning review for %s: %s", key, started.warning)
+    learnlog.reset_counters(home, key, turns=mem, tools=skl)
     return kind
 
 
@@ -121,10 +120,10 @@ def review_now(door: str, key: str, *, provider: str, session_id: str | None,
             return "🧠 The learning loop is off. `archi learn enable` turns it back on."
         if learnlog.excluded(cfg, key):
             return "🧠 This conversation is excluded from the learning loop (state/learn/config.json)."
-        n = len(learnlog.pending_turns(home, key))
+        kind = "memory" if cfg.get("skill_mode") == "off" else "combined"
+        n = len(learnlog.pending_turns(home, key, kind))
         if n == 0:
             return "🧠 Nothing new to review here since the last review."
-        kind = "memory" if cfg.get("skill_mode") == "off" else "combined"
         started = spawn_review(home, key, kind, explicit=True)
         if not started.ok:
             return f"⚠️ Could not start the review: {started.error}"

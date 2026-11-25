@@ -218,15 +218,16 @@ def test_digest_marks_door_turns_sessions_and_removes_secrets():
          "prompt": "[25.11.2026 14:05, Wednesday · Europe/Berlin]\nplease stop adding tables", "answer": "ok"},
         {"seq": 2, "ts": 1764075960, "session": "b", "from_door": True, "steps": [], "tool_calls": 0,
          "prompt": "[Message from the Archi door, not written by the owner] a job ended", "answer": "reported"},
-        {"seq": 3, "ts": 1764076020, "session": "b", "steps": [], "tool_calls": 0,
-         "prompt": f"here is the key {key}", "answer": "x" * 5000},
+        {"seq": 3, "ts": 1764076020, "session": "b", "steps": [f"curl -H 'x-api: {key}' https://example.org"],
+         "tool_calls": 1, "prompt": f"here is the key {key}", "answer": "x" * 5000},
     ]
     d = digest.build(entries)
     t = d["text"]
     assert "please stop adding tables" in t and "Wednesday ·" not in t
     assert "### DOOR (an automatic message from the door, not the owner)" in t and "a new session starts here" in t
     assert key not in t and "[secret removed]" in t and "(cut)" in t and "[steps ×1: Reading a.md]" in t
-    assert (d["first_seq"], d["last_seq"], d["turns"], d["tool_calls"]) == (1, 3, 3, 1)
+    assert (d["first_seq"], d["last_seq"], d["turns"], d["tool_calls"]) == (1, 3, 3, 2)
+    assert "x-api: [secret removed]" in t                          # step labels are redacted too
     assert digest.build(entries, budget=200)["text"].startswith("…(older part trimmed)…")
     assert "1 older turn(s)" in digest.build(entries, max_turns=2)["text"]
     assert learnlog.from_door("[25.11.2026 14:05, Wednesday · Europe/Berlin]\n" + entries[1]["prompt"])
@@ -362,6 +363,107 @@ def test_a_skill_review_sees_turns_a_memory_review_consumed_and_moves_the_lesson
     assert "archived: The owner wants their own wording kept" in text and "skill `writing-style`" in text
     prompt = env.calls()[-1]["prompt"]
     assert "ARCHIVE that fact" in prompt and "/state/learn/stage/" in prompt.split("ARCHIVE that fact")[1][:400]
+
+
+def test_no_keep_backups_setting_can_lose_this_runs_copy(env):
+    learnlog.update_config(env.home, keep_backups=0)
+    turns(env.home, 2)
+    env.plan([
+        {"op": "replace", "store": "skills", "path": "writing-style/SKILL.md",
+         "old": "description: How the owner wants written answers to look\n", "new": ""},
+        {"op": "write", "store": "memory", "path": "owner-timezone.md",
+         "text": "---\nname: owner-timezone\ndescription: stale\narchived: true\n---\n"},
+    ])
+    [rec] = review.run(env.home, KEY)
+    assert rec["ok"]
+    assert (env.skills / "writing-style" / "SKILL.md").read_text() == SKILL          # rolled back, not lost
+    assert (env.mem / ".archive" / "owner-timezone.md").read_text() == FACT           # archived, not lost
+    assert len(list((learnlog.learn_dir(env.home) / "backups").iterdir())) == 1
+
+
+def test_a_reviewer_that_deletes_memory_files_is_undone(env):
+    learnlog.update_config(env.home, provider="codex")   # a Codex sandbox can delete inside the stage
+    turns(env.home, 2)
+    env.plan([{"op": "delete", "store": "memory", "path": "owner-timezone.md"},
+              {"op": "delete", "store": "memory", "path": "legacy-note.md"}])
+    before = stores.snapshot(env.mem)
+    [rec] = review.run(env.home, KEY, kind="memory")
+    assert rec["ok"] and stores.snapshot(env.mem) == before
+    assert "memory `owner-timezone.md`: deleting memory files is not allowed, restored" in rec["lines"]
+    assert not any(line.startswith("archived") for line in rec["lines"])
+
+
+def test_archiving_never_replaces_an_older_archive_copy(env):
+    (env.mem / ".archive").mkdir()
+    (env.mem / ".archive" / "owner-timezone.md").write_text("the text archived long ago\n")
+    stub = "---\nname: owner-timezone\ndescription: stale\narchived: true\n---\n"
+    turns(env.home, 2)
+    env.plan([{"op": "write", "store": "memory", "path": "owner-timezone.md", "text": stub}])
+    [rec] = review.run(env.home, KEY)
+    assert rec["ok"] and not (env.mem / "owner-timezone.md").exists()
+    assert (env.mem / ".archive" / "owner-timezone.md").read_text() == "the text archived long ago\n"
+    [newer] = [p for p in (env.mem / ".archive").iterdir() if p.name != "owner-timezone.md"]
+    assert newer.name.startswith("owner-timezone.") and newer.read_text() == FACT
+    # A reviewer that rewrites an old archive copy: the old text stays, the rewrite is kept beside it.
+    (env.mem / "owner-timezone.md").write_text(FACT)
+    turns(env.home, 1)
+    env.plan([{"op": "write", "store": "memory", "path": ".archive/owner-timezone.md", "text": "rewritten\n"}])
+    [rec] = review.run(env.home, KEY)
+    assert (env.mem / ".archive" / "owner-timezone.md").read_text() == "the text archived long ago\n"
+    assert sorted(p.read_text() for p in (env.mem / ".archive").iterdir()) == sorted(
+        ["the text archived long ago\n", FACT, "rewritten\n"])
+
+
+def test_a_huge_last_turn_does_not_reopen_reviewed_turns(env):
+    turns(env.home, 3)
+    afterturn.turn_finished("telegram", KEY, provider="claude", session_id="s1", tool_calls=300, home=env.home,
+                            prompt="€" * 16000, answer="€" * 16000, steps=["€" * 160] * 300)
+    assert learnlog.log_path(env.home, KEY).stat().st_size > 3 * 65536       # far beyond the first tail window
+    learnlog.set_watermark(env.home, KEY, 4)
+    assert learnlog.pending_turns(env.home, KEY) == []
+    # A log that was reset while the watermarks stayed: the next review sets them back instead of starting
+    # from the beginning forever.
+    learnlog.log_path(env.home, KEY).unlink()
+    learnlog.counters_path(env.home).unlink()
+    turns(env.home, 2)
+    assert len(learnlog.pending_turns(env.home, KEY)) == 2
+    learnlog.set_watermark(env.home, KEY, 2)
+    assert learnlog.watermark(env.home, KEY) == 2 and learnlog.pending_turns(env.home, KEY) == []
+
+
+def test_learn_counts_what_its_review_will_see_and_always_answers(env, monkeypatch):
+    learnlog.update_config(env.home, skill_mode="off")
+    turns(env.home, 2)
+    env.plan([])
+    [rec] = review.run(env.home, KEY, kind="memory")
+    assert rec["ok"] and learnlog.watermark(env.home, KEY, "memory") == 2
+    started = started_reviews(monkeypatch)
+    msg = afterturn.review_now("telegram", KEY, provider="claude", session_id=None, home=env.home)
+    assert "Nothing new" in msg and started == []
+    # /learn's review found that another review took the turns meanwhile: the owner still gets an answer.
+    learnlog.update_config(env.home, skill_mode="auto")
+    [rec] = review.run(env.home, KEY, kind="memory", explicit=True)
+    assert rec["skipped"] and rec["notified"] and "nothing new since the last review" in env.posts[-1][1]
+
+
+def test_the_hook_does_not_hold_the_shared_lock_while_a_review_starts(env, monkeypatch):
+    import fcntl
+    seen = []
+
+    def spawn(home, key, kind, explicit=False):
+        with open(learnlog.learn_dir(home) / ".state.lock", "a+") as fh:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                seen.append("free")
+            except BlockingIOError:
+                seen.append("held")
+        return detach.Spawned(True, "test")
+
+    monkeypatch.setattr(afterturn, "spawn_review", spawn)
+    learnlog.update_config(env.home, memory_every_turns=1)
+    turns(env.home, 1)
+    assert seen == ["free"] and learnlog.load_counters(env.home)[KEY]["turns"] == 0
 
 
 def test_dry_run_changes_nothing_real(env):

@@ -14,6 +14,10 @@ ARCHI_DETACH = auto (default) | systemd | setsid | off. `off` starts nothing: th
 test ever leaves a unit or a stray review behind. Transient unit names start with ARCHI_UNIT_PREFIX (default
 "archi").
 
+Limit of the fallback: a double fork leaves the caller's process tree, not its cgroup. On a machine without
+systemd that is all there is; but when systemd runs the door and only systemd-run failed, work started this
+way still sits in the door's cgroup and a door restart kills it. The result carries a warning then.
+
 The process gets exactly the environment it is given. systemd-run receives that environment on its command
 line, so it must never hold secrets: Archi's processes read their credentials from config/archi.env.
 """
@@ -59,6 +63,7 @@ class Spawned:
     unit: str = ""     # the transient unit (systemd-run), e.g. archi-job-<id>.service
     pid: int = 0       # the detached process (setsid)
     error: str = ""
+    warning: str = ""  # started, but by the fallback although systemd runs (see the module docstring)
 
 
 # Runs as `python -c` with the spec on stdin (never on the command line: the environment is in it).
@@ -125,6 +130,9 @@ def spawn(argv: list[str], *, name: str, description: str = "", env: dict | None
     res = _setsid(argv, env=env, cwd=cwd, log_path=log_path, nice=nice, timeout=timeout)
     if not res.ok and first_error:
         res.error = f"{first_error}; {res.error}"
+    elif res.ok and first_error:
+        res.warning = (f"{first_error}; started as a detached process instead, which a restart of the door's "
+                       "service can still stop")
     return res
 
 
@@ -233,14 +241,22 @@ def kill_tree(pid: int, *, grace: float = 5.0) -> list[int]:
     me = os.getpid()
     if int(pid) in (me, os.getppid(), 0, 1):
         return []          # never this process, its parent or init (a stale pid record must not do that)
-    targets = [p for p in [int(pid), *descendants(pid)] if p != me]
-    for p in targets:
+    # Every target is remembered with its start time: a pid freed and reused during the grace period belongs
+    # to another process and is left alone.
+    targets = [(p, start_ticks(p)) for p in [int(pid), *descendants(pid)] if p != me]
+
+    def alive(p: int, ticks: int | None) -> bool:
+        return pid_alive(p) and (ticks is None or start_ticks(p) == ticks)
+
+    for p, _t in targets:
         _signal(p, signal.SIGTERM)
     deadline = time.monotonic() + grace
-    while time.monotonic() < deadline and any(pid_alive(p) for p in targets):
+    while time.monotonic() < deadline and any(alive(p, t) for p, t in targets):
         time.sleep(0.05)
-    late = [d for p in targets if pid_alive(p) for d in descendants(p) if d not in targets and d != me]
-    for p in targets + late:
-        if p != me and pid_alive(p):
+    known = {p for p, _t in targets}
+    late = [(d, start_ticks(d)) for p, t in targets if alive(p, t) for d in descendants(p)
+            if d not in known and d != me]
+    for p, t in targets + late:
+        if p != me and alive(p, t):
             _signal(p, signal.SIGKILL)
-    return targets + late
+    return [p for p, _t in targets + late]

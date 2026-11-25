@@ -43,7 +43,6 @@ import fcntl
 import json
 import logging
 import os
-import re
 import secrets
 import shlex
 import shutil
@@ -56,6 +55,7 @@ from pathlib import Path
 
 from . import detach
 from .config import CODE_DIR, Config, atomic_write, home as default_home
+from .redact import secret_env
 
 log = logging.getLogger("archi.jobs")
 
@@ -72,10 +72,11 @@ KEEP_UNREPORTED_S = 60 * 86400
 PRUNE_EVERY_S = 600
 DOORS = {"tg": "telegram", "mx": "matrix"}
 DOOR_MARK = "[Message from the Archi door, not written by the owner]"
-# Never copied into a job's environment (the spec is a file, and systemd-run puts its env on a command line).
-SECRET_ENV = re.compile(r"(?i)(TOKEN|SECRET|PASSW|API_?KEY|PRIVATE|CREDENTIAL|COOKIE|AUTH)")
 DROP_ENV = {"CLAUDECODE", "OLDPWD", "PWD", "SHLVL", "_"}
 ICONS = {"queued": "⏳", "running": "▶", "done": "✓", "failed": "✗", "cancelled": "■"}
+# Jobs reported by this process. The door reports a job and then marks it; if that write fails (a full
+# disk), the job must not be reported again on every poll.
+_reported_here: set[str] = set()
 
 
 class JobError(Exception):
@@ -225,10 +226,11 @@ def active_jobs(home) -> list[dict]:
 
 
 def job_env(base: dict | None = None) -> dict:
-    """The launching environment minus secrets and the parent CLI session's own variables."""
+    """The launching environment minus secrets (by name or by value: it is kept in spec.json) and the parent
+    CLI session's own variables. Agent jobs read their credentials from the config, like every turn."""
     base = os.environ if base is None else base
     return {k: v for k, v in base.items()
-            if k not in DROP_ENV and not k.startswith("CLAUDE_CODE_") and not SECRET_ENV.search(k)}
+            if k not in DROP_ENV and not k.startswith("CLAUDE_CODE_") and not secret_env(k, v)}
 
 
 def _conversation_env(conversation: str) -> dict:
@@ -311,13 +313,15 @@ def launch(kind: str, *, home: str | os.PathLike | None = None, conversation: st
     runner = [sys.executable, str(CODE_DIR / "archi"), "job", "_run", job_id]
     runner_env = {k: env[k] for k in ("PATH", "HOME", "LANG", "LC_ALL", "TZ") if env.get(k)}
     runner_env.update(ARCHI_HOME=str(home), PYTHONUNBUFFERED="1")
-    res = detach.spawn(runner, name=unit, description=f"Archi job {job_id}: {spec['label']}", env=runner_env,
+    # The unit description names the job, never its command: a command line can hold a password, and the
+    # description is visible to every user of the machine and in the journal.
+    res = detach.spawn(runner, name=unit, description=f"Archi job {job_id} ({kind})", env=runner_env,
                        cwd=str(home), log_path=d / "runner.log")
     if not res.ok:
         _update(d, state="failed", ended_at=time.time(), error=f"could not start the job: {res.error}",
                 reported_at=time.time())
         raise JobError(f"could not start the job: {res.error}")
-    spec.update(via=res.via, unit=res.unit, launcher_pid=res.pid or None)
+    spec.update(via=res.via, unit=res.unit, launcher_pid=res.pid or None, via_warning=res.warning)
     _write_json(d / "spec.json", spec)
     return _job(d)
 
@@ -578,6 +582,8 @@ def finished_unreported(door: str, home: str | os.PathLike | None = None) -> lis
         reap(home)
         out = []
         for job in reversed(list_jobs(home)):                     # oldest first: reports in the order of events
+            if job["id"] in _reported_here:
+                continue
             if job["state"] in TERMINAL and not job.get("reported_at") and door_of(job["conversation"]) == door:
                 job["result_tail"] = result_tail(job)
                 out.append(job)
@@ -626,9 +632,13 @@ def report_prompt(job: dict) -> str:
 
 
 def mark_reported(job_id: str, home: str | os.PathLike | None = None) -> None:
+    _reported_here.add(str(job_id))
     d = jobs_dir(home) / str(job_id)
-    if (d / "spec.json").exists():
-        _update(d, reported_at=time.time())
+    try:
+        if (d / "spec.json").exists():
+            _update(d, reported_at=time.time())
+    except OSError as e:
+        log.warning("job %s: could not record the report (%r); it is not reported again by this process", job_id, e)
 
 
 def status_lines(home: str | os.PathLike | None = None, conversation: str | None = None, limit: int = 10) -> list[str]:

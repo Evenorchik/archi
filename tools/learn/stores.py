@@ -32,6 +32,7 @@ if __package__ in (None, ""):
 
 from core import learnlog  # noqa: E402
 from core.config import atomic_write  # noqa: E402
+from core.redact import SECRET_RE  # noqa: E402
 from tools import new_skill  # noqa: E402
 
 INDEX = "MEMORY.md"
@@ -39,16 +40,6 @@ ARCHIVE = ".archive"
 TYPES = ("user", "feedback", "project", "reference")
 SKIP_PARTS = (".history", "__pycache__")
 LINK_RE = re.compile(r"\]\(\s*<?([^)\s>]+\.md)>?\s*\)")
-SECRET_RE = re.compile(
-    r"(\bsk-(?:ant-|proj-|svcacct-)?[A-Za-z0-9_-]{20,}|\bgh[pousr]_[A-Za-z0-9]{30,}|\bxox[abpr]-[A-Za-z0-9-]{10,}"
-    r"|\bAKIA[0-9A-Z]{16}\b|\bAIza[0-9A-Za-z_-]{35}\b|\bsyt_[A-Za-z0-9_-]{20,}|\bhf_[A-Za-z0-9]{20,}"
-    r"|\b\d{8,10}:[A-Za-z0-9_-]{35}\b|-----BEGIN [A-Z ]*PRIVATE KEY"
-    r"|\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|bot[_-]?token|secret|password|passwd)\b\s*[:=]\s*['\"]?"
-    r"(?=[A-Za-z0-9_+/=-]*\d)(?=[A-Za-z0-9_+/=-]*[A-Za-z])[A-Za-z0-9_+/=-]{16,})", re.I)
-
-
-def redact(text: str) -> str:
-    return SECRET_RE.sub("[secret removed]", text or "")
 
 
 def read(path: Path) -> str:
@@ -162,19 +153,19 @@ class Stage:
 def prepare(home: Path, name: str, *, real_memory: Path, real_skills: Path, dry: bool, skills: bool = False,
             proposals: bool = False, keep_backups: int = 30) -> Stage:
     """Back up and stage the stores for one run. A live run's base copy is its backup
-    (state/learn/backups/<name>/); a dry run keeps it next to its stage."""
+    (state/learn/backups/<name>/); a dry run keeps it next to its stage. Each store is read ONCE: the base is a
+    copy of the staged copy, so the two are identical even when the live agent writes in between."""
     ld = learnlog.learn_dir(home)
     root = ld / ("dryrun" if dry else "stage") / name
     base = (root / "base") if dry else (ld / "backups" / name)
-    copy_tree(real_memory, base / "memory")
     copy_tree(real_memory, root / "memory")
     if not (root / "memory" / INDEX).exists():
         (root / "memory" / INDEX).write_text("", encoding="utf-8")
-        (base / "memory" / INDEX).write_text("", encoding="utf-8")
+    copy_tree(root / "memory", base / "memory")
     st = Stage(root=root, memory=root / "memory", skills=None, proposals=None, base=base)
     if skills:
-        copy_tree(real_skills, base / "skills")
         copy_tree(real_skills, root / "skills")
+        copy_tree(root / "skills", base / "skills")
         st.skills = root / "skills"
     if proposals:
         st.proposals = root / "proposals"
@@ -183,13 +174,27 @@ def prepare(home: Path, name: str, *, real_memory: Path, real_skills: Path, dry:
     st.base_skills = snapshot(st.skills)
     st.memory_baseline = {f.name: file_problems(f) for f in st.memory.glob("*.md") if f.name != INDEX}
     st.skill_baseline = skill_problems_of(st.skills) if st.skills else {}
-    learnlog.prune(ld / "backups", keep_backups)
-    learnlog.prune(ld / "stage", 5)
-    learnlog.prune(ld / "dryrun", 5)
+    # This run's own copies are never pruned: the rollback and the archives of this run read from them.
+    learnlog.prune(ld / "backups", max(1, int(keep_backups)), protect=(name,))
+    learnlog.prune(ld / "stage", 5, protect=(name,))
+    learnlog.prune(ld / "dryrun", 5, protect=(name,))
     return st
 
 
 # ---------------------------------------------------------------------------------------------- memory
+
+def undo_memory_deletions(st: Stage) -> list[str]:
+    """A reviewer must not delete memory files (the prompt says so; a Codex sandbox could still do it): every
+    staged file that disappeared is put back from the base copy. Archiving goes through stubs instead."""
+    after = snapshot(st.memory, md_only=True)
+    restored = []
+    for rel in sorted(set(st.base_memory) - set(after)):
+        src = st.base / "memory" / rel
+        if src.is_file():
+            copy_file(src, st.memory / rel)
+            restored.append(f"memory `{rel}`: deleting memory files is not allowed, restored")
+    return restored
+
 
 def memory_problems(st: Stage) -> list[str]:
     """Problems the reviewer introduced into the staged memory (empty = safe to apply)."""
@@ -253,22 +258,50 @@ def repair_index(mem: Path) -> list[str]:
     return fixes
 
 
-def finalize_archives(mem: Path, base: Path | None = None) -> list[str]:
+def _free_name(arch: Path, stem: str, stamp: str) -> Path:
+    dest, n = arch / f"{stem}.{stamp}.md", 0
+    while dest.exists():
+        n += 1
+        dest = arch / f"{stem}.{stamp}.{n}.md"
+    return dest
+
+
+def finalize_archives(mem: Path, base: Path | None = None, stamp: str | None = None) -> list[str]:
     """Archiving = an `archived: true` stub in place of the fact (the reviewer cannot delete files) plus a copy
-    of the fact in .archive/. When the reviewer wrote only the stub, the copy is made from the fact as it was
-    before the run (`base`). Once the copy exists, the stub goes: nothing is lost, the live store is lean."""
+    of the fact in .archive/. The copy is always the fact as it was before the run (`base`), and an archive copy
+    that already existed is never replaced: a second copy of the same name gets a time-stamped name, and a
+    reviewer's rewrite of an old archive copy is moved aside the same way. Once the copy exists, the stub goes,
+    so nothing is lost and the live store stays lean."""
+    stamp = stamp or time.strftime("%Y%m%dT%H%M%S")
+    arch = mem / ARCHIVE
+    old_arch = Path(base) / ARCHIVE if base else None
+    if old_arch is not None and old_arch.is_dir():
+        for old in sorted(old_arch.glob("*.md")):
+            cur = arch / old.name
+            if cur.is_file() and sha(cur) != sha(old):
+                os.replace(cur, _free_name(arch, old.stem, stamp))     # keep the reviewer's text, aside
+            if not cur.is_file():
+                shutil.copy2(old, cur)                                  # the older archive copy stays as it was
     done = []
     for f in sorted(mem.glob("*.md")):
         if f.name == INDEX or not is_archived(frontmatter(read(f))):
             continue
-        copy = mem / ARCHIVE / f.name
         old = Path(base) / f.name if base else None
-        if not copy.is_file() and old is not None and old.is_file() and not is_archived(frontmatter(read(old))):
-            copy.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(old, copy)
-        if copy.is_file():
-            f.unlink()
-            done.append(f"archived {f.name}")
+        old_text = old if old is not None and old.is_file() and not is_archived(frontmatter(read(old))) else None
+        target = arch / f.name
+        existed = old_arch is not None and (old_arch / f.name).is_file()
+        if old_text is not None:
+            if existed:
+                target = _free_name(arch, f.stem, stamp)                # never over an older archive copy
+            elif target.is_file() and sha(target) != sha(old_text):
+                target = _free_name(arch, f.stem, stamp)                # the reviewer's copy differs: keep both
+            if not target.is_file():
+                arch.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(old_text, target)
+        if old_text is None and base is None and not (arch / f.name).is_file():
+            continue          # without the earlier state nothing proves the text is safe: leave the stub
+        f.unlink()
+        done.append(f"archived {f.name}")
     return done
 
 
@@ -321,14 +354,18 @@ def merge_index(base: str, ours: str, theirs: str) -> str:
 def apply_memory(st: Stage, real: Path) -> dict:
     """Copy what the review changed into the real store (three-way, see the module docstring)."""
     after = snapshot(st.memory, md_only=True)
-    now = snapshot(real, md_only=True)
     applied, skipped, removed = [], [], []
     for rel in sorted(set(after) | set(st.base_memory)):
         if rel == INDEX:
             continue
-        a, b, r = after.get(rel), st.base_memory.get(rel), now.get(rel)
+        a, b = after.get(rel), st.base_memory.get(rel)
         if a == b:
             continue
+        target = real / rel
+        try:   # the live file, checked right before acting on it: the live agent may write at any moment
+            r = sha(target) if target.is_file() else None
+        except OSError:
+            r = "unreadable"
         if r != b:
             skipped.append(rel)        # the live agent changed it meanwhile: its version stays
             continue
@@ -342,11 +379,16 @@ def apply_memory(st: Stage, real: Path) -> dict:
     fixes = []
     base_idx, ours = read(st.base / "memory" / INDEX), read(st.memory / INDEX)
     if applied or removed or ours != base_idx:
-        theirs = read(real / INDEX)
-        merged = merge_index(base_idx, ours, theirs)
-        if merged != theirs:
+        for _attempt in range(3):
+            theirs = read(real / INDEX)
+            merged = merge_index(base_idx, ours, theirs)
+            if merged == theirs:
+                break
+            if read(real / INDEX) != theirs:
+                continue               # changed while merging: merge with the newer index
             real.mkdir(parents=True, exist_ok=True)
             atomic_write(real / INDEX, merged, mode=0o644)
+            break
         fixes = repair_index(real)
     return {"applied": applied, "skipped": skipped, "removed": removed, "index_fixes": fixes}
 
@@ -428,11 +470,12 @@ def apply_skills(st: Stage, real: Path, stamp: str | None = None) -> dict:
     if st.skills is None:
         return {"applied": applied, "skipped": skipped}
     stamp = stamp or time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    after, now = snapshot(st.skills), snapshot(real)
+    after = snapshot(st.skills)
     changed = sorted(r for r in set(after) | set(st.base_skills) if after.get(r) != st.base_skills.get(r))
-    for name in sorted({r.split("/")[0] for r in changed}):
-        files = [r for r in changed if r.split("/")[0] == name]
-        if any(now.get(r) != st.base_skills.get(r) for r in files):
+    for name in sorted({r.split("/")[0] for r in changed if "/" in r}):
+        files = [r for r in changed if "/" in r and r.split("/")[0] == name]
+        now = snapshot(real / name)       # checked right before acting on this skill
+        if any(now.get(r.split("/", 1)[1]) != st.base_skills.get(r) for r in files):
             skipped.append(name)         # changed in the real store meanwhile: the live version stays
             continue
         old_md = real / name / "SKILL.md"

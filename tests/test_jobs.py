@@ -178,8 +178,35 @@ def test_a_job_needs_a_conversation_and_reports_to_its_door(jhome, monkeypatch):
 def test_job_environment_never_carries_secrets():
     env = jobs.job_env({"PATH": "/bin", "CLAUDE_CODE_OAUTH_TOKEN": "x", "OPENAI_API_KEY": "x", "MY_PASSWORD": "x",
                         "GITHUB_TOKEN": "x", "CLAUDECODE": "1", "CLAUDE_CODE_ENTRYPOINT": "cli", "LANG": "C.UTF-8",
+                        "STRIPE_KEY": "x", "GEMINI_KEY": "x", "MY_PASSPHRASE": "x", "SENTRY_DSN": "x",
+                        "DATABASE_URL": "x", "BACKUP_TARGET": "postgres://app:" + "pw42@localhost:5432/x",
+                        "INNOCENT_NAME": "sk-" + "d" * 30, "SSH_KEY_PATH": "/root/.ssh/id",
                         "ARCHI_CONVERSATION": CONV})
-    assert env == {"PATH": "/bin", "LANG": "C.UTF-8", "ARCHI_CONVERSATION": CONV}
+    assert env == {"PATH": "/bin", "LANG": "C.UTF-8", "SSH_KEY_PATH": "/root/.ssh/id", "ARCHI_CONVERSATION": CONV}
+
+
+def test_the_unit_description_never_shows_the_command(jhome, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(detach, "spawn", lambda argv, **kw: seen.update(kw) or detach.Spawned(
+        True, "setsid", pid=1, warning="systemd-run failed: no bus; started as a detached process instead"))
+    job = jobs.launch("run", shell="curl -u admin:" + "hunter2hunter2 https://example.org")
+    assert seen["description"] == f"Archi job {job['id']} (run)" and "hunter2" not in seen["description"]
+    assert "systemd-run failed" in job["via_warning"]
+
+
+def test_a_failed_report_record_does_not_repeat_the_report(jhome, monkeypatch):
+    done = wait_state(jobs.launch("run", shell="true")["id"], jhome)
+    assert [j["id"] for j in jobs.finished_unreported("telegram", jhome)] == [done["id"]]
+
+    def disk_full(*a, **k):
+        raise OSError(28, "No space left on device")
+
+    real_update = jobs._update
+    monkeypatch.setattr(jobs, "_update", disk_full)
+    jobs.mark_reported(done["id"], jhome)                         # logs, never raises
+    monkeypatch.setattr(jobs, "_update", real_update)
+    assert not jobs.get(done["id"], jhome).get("reported_at")     # the write really failed
+    assert jobs.finished_unreported("telegram", jhome) == []      # and it is not offered again by this process
 
 
 # ------------------------------------------------------------------ agent and workflow jobs
@@ -269,6 +296,28 @@ def test_spawn_modes(tmp_path, monkeypatch):
     res = detach.spawn(["true"], name="x")
     assert not res.ok and "Failed to connect to bus" in res.error
     assert detach.kill_tree(os.getpid()) == [] and detach.kill_tree(1) == []
+
+
+def test_kill_tree_never_signals_a_reused_pid(monkeypatch):
+    # A tree that ignores SIGTERM, and pids that "belong to other processes" after the grace period: nothing
+    # may be SIGKILLed then (a recycled pid is somebody else's process).
+    proc = subprocess.Popen(["bash", "-c", "trap '' TERM; sleep 30 & wait"], start_new_session=True)
+    try:
+        wait_for(lambda: detach.descendants(proc.pid), what="the sleep child")
+        child = detach.descendants(proc.pid)[0]
+        real, real_sleep, swapped = detach.start_ticks, time.sleep, {"on": False}
+        monkeypatch.setattr(detach, "start_ticks", lambda p: (real(p) + 1) if swapped["on"] and real(p) else real(p))
+        monkeypatch.setattr(detach.time, "sleep", lambda s: swapped.update(on=True))
+        detach.kill_tree(proc.pid, grace=0.2)
+        monkeypatch.setattr(detach.time, "sleep", real_sleep)
+        monkeypatch.setattr(detach, "start_ticks", real)
+        assert pid_alive(proc.pid) and pid_alive(child)
+        assert proc.pid in detach.kill_tree(proc.pid, grace=0.2)          # identities intact: SIGKILLed
+        proc.wait(timeout=10)
+        wait_for(lambda: not pid_alive(child), what="the child to die")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
 
 
 def test_systemd_run_command(monkeypatch):

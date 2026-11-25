@@ -6,6 +6,7 @@ JSON list of operations; FAKE_REVIEW_MODE = ok | error | garbage | hang; FAKE_LO
 logged (argv, cwd, the prompt). Operations:
   {"op": "write",   "store": "memory|skills|proposals|abs", "path": "rel/or/abs", "text": "..."}
   {"op": "replace", "store": ..., "path": ..., "old": "...", "new": "..."}
+  {"op": "delete",  "store": ..., "path": ...}
 A store is found the way the real CLI is confined: claude through its --add-dir directories (by name),
 codex inside its -C working root. "abs" writes an absolute path: it stands for the live agent changing a
 real store while the review runs.
@@ -50,6 +51,8 @@ for op in plan:
         path.write_text(op["text"])
     elif op["op"] == "replace":
         path.write_text(path.read_text().replace(op["old"], op["new"]))
+    elif op["op"] == "delete":          # what a Codex reviewer could do inside its sandbox
+        path.unlink()
 
 summary = os.environ.get("FAKE_SUMMARY", f"Did {len(plan)} change(s).")
 if flavor == "codex":
