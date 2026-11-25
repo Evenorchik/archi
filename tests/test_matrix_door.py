@@ -265,6 +265,39 @@ def test_room_the_owner_already_left_is_not_kept(tmp_path):
     assert door.registry.get(KEY) is None and api.left == [ROOM] and api.sent == []
 
 
+def test_owner_leaving_and_coming_back_in_one_window_keeps_the_room(tmp_path):
+    runner = FakeRunner()
+    door, api = make_door(tmp_path, runner)
+    run_sync(door, joined(ROOM, member(OWNER, "leave"), member(OWNER, "join"), msg("I am back"),
+                          state=[name_ev("Work")]))
+    assert api.left == [] and door.registry.get(KEY).state == "open" and len(runner.calls) == 1
+
+
+def test_failed_join_is_retried_in_the_background(tmp_path, monkeypatch):
+    monkeypatch.setattr("doors.matrix.bot.JOIN_RETRY_S", (0.01, 0.01, 0.01))
+    door, api = make_door(tmp_path)
+    attempts = []
+
+    def flaky(room_id):
+        attempts.append(room_id)
+        return MxError("M_UNKNOWN", "temporarily unavailable", 502) if len(attempts) < 3 else None
+
+    api.fail["join"] = flaky
+
+    async def scenario():
+        await door.handle_sync(invited(ROOM, OWNER, name="Later"))
+        assert api.joined == [] and door.background
+        await asyncio.wait(list(door.background), timeout=5)
+
+    go(scenario())
+    assert len(attempts) == 3 and api.joined == [ROOM] and door.registry.get(KEY).title == "Later"
+    assert api.texts(ROOM) == [GREETING]
+    door2, api2 = make_door(tmp_path / "b")
+    api2.fail["join"] = MxError("M_FORBIDDEN", "You are not invited to this room.", 403)
+    run_sync(door2, invited(ROOM, OWNER))
+    assert not door2.background and api2.joined == []      # refused for good: no retries
+
+
 def test_room_without_server_part_and_parallel_rooms(tmp_path):
     runner = FakeRunner()
     door, api = make_door(tmp_path, runner)

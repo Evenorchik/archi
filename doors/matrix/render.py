@@ -11,7 +11,7 @@ from __future__ import annotations
 import html
 
 from core import markdown as md
-from core.markdown import escape, strip_html, utf8_len  # noqa: F401  (re-exported)
+from core.markdown import escape, utf8_len  # noqa: F401  (escape is re-exported for live.py)
 
 PIECE_BYTES = 16000          # Markdown per message; the HTML is usually 1.2-2x as large
 EVENT_BUDGET = 60000         # body + formatted_body, under the 64 KiB event limit with room for the envelope

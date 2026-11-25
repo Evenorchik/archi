@@ -52,6 +52,7 @@ COMMANDS = command_list("room")
 SYNC_TIMEOUT_MS = 30000
 MAX_MESSAGE_AGE_S = 24 * 3600     # an owner message older than this (the door was down) is not answered
 MIN_FREE_BYTES = 512 * 1024 * 1024
+JOIN_RETRY_S = (5, 15, 60, 300, 900)   # a failed join of the owner's invite is retried this long
 SYNC_FILTER = {"presence": {"types": []}, "account_data": {"types": []},
                "room": {"timeline": {"limit": 50}, "ephemeral": {"types": []}, "account_data": {"types": []}}}
 GREETING = "👋 I am here. This room is a separate conversation with its own session: write to me here."
@@ -129,6 +130,7 @@ class Door(BaseDoor):
         self.since: str | None = None
         self._left: set[str] = set()          # rooms this process left: late "join" entries do not revive them
         self._encrypted_done: set[str] = set()
+        self.background: set[asyncio.Task] = set()   # waits that end with the process (join retries)
 
     @property
     def owner(self) -> str:
@@ -272,15 +274,42 @@ class Door(BaseDoor):
             await self._leave(room_id)
             return
         encrypted = any(e.get("type") == "m.room.encryption" for e in events)
-        for attempt in range(2):
-            try:
-                await self.api.join(room_id)
-                break
-            except MxError as e:
-                self.log("could not join", room_id, e)
-                if attempt or e.fatal:
-                    return
-                await asyncio.sleep(2)
+        joined = await self._join(room_id)
+        if joined:
+            await self._joined_by_invite(room_id, name, encrypted)
+        elif joined is None:
+            # A pending invite is not sent again by later syncs: a join that failed for a passing reason
+            # (network, a server error, rate limits) is retried in the background instead of being lost.
+            task = asyncio.create_task(self._join_later(room_id, name, encrypted))
+            self.background.add(task)
+            task.add_done_callback(self.background.discard)
+
+    async def _join(self, room_id: str) -> bool | None:
+        """True joined, None failed for a passing reason (worth retrying), False refused for good."""
+        try:
+            await self.api.join(room_id)
+            return True
+        except MxError as e:
+            self.log("could not join", room_id, e)
+            if e.fatal or e.errcode in ("M_FORBIDDEN", "M_NOT_FOUND") or (400 <= e.status < 500 and e.status != 429):
+                return False
+            return None
+        except Exception as e:  # noqa: BLE001 - network trouble
+            self.log("could not join", room_id, repr(e))
+            return None
+
+    async def _join_later(self, room_id: str, name: str | None, encrypted: bool) -> None:
+        for delay in JOIN_RETRY_S:
+            await asyncio.sleep(delay)
+            ok = await self._join(room_id)
+            if ok:
+                await self._joined_by_invite(room_id, name, encrypted)
+                return
+            if ok is False:
+                return
+        self.log("gave up joining", room_id, "after", len(JOIN_RETRY_S), "retries; the owner can invite again")
+
+    async def _joined_by_invite(self, room_id: str, name: str | None, encrypted: bool) -> None:
         self._left.discard(room_id)
         self.registry.update_chat(room_id, door="mx", membership="join", name=name or "", encrypted=encrypted)
         if encrypted:
@@ -298,10 +327,12 @@ class Door(BaseDoor):
         if any(e.get("type") == "m.room.encryption" for e in state + timeline):
             await self._encrypted(room_id, _state_value(state + timeline, "m.room.name", "name") or "")
             return
-        owner_left = [e for e in state if e.get("type") == "m.room.member" and e.get("state_key") == self.owner
-                      and (e.get("content") or {}).get("membership") in ("leave", "ban")]
-        if self.owner and owner_left:
-            await self._owner_left(room_id)          # left before this sync window (or before the first start)
+        owner_events = [e for e in state + timeline if e.get("type") == "m.room.member" and self.owner
+                        and e.get("state_key") == self.owner]
+        if owner_events and (owner_events[-1].get("content") or {}).get("membership") in ("leave", "ban"):
+            # The owner's membership at the end of this window (a leave and a re-join in one window keep the
+            # room; so does an old leave in the history of the first start, if they came back).
+            await self._owner_left(room_id)
             return
         members = (info.get("summary") or {}).get("m.joined_member_count")
         conv = self._ensure(room_id, _state_value(state, "m.room.name", "name"),
@@ -327,9 +358,6 @@ class Door(BaseDoor):
                 self.registry.upsert(key, title=name, title_confirmed=True)
                 self.registry.update_chat(room_id, name=name)
                 self.log("room renamed", key, repr(name))
-        elif etype == "m.room.member" and ev.get("state_key") == self.owner and self.owner:
-            if content.get("membership") in ("leave", "ban"):
-                await self._owner_left(room_id)
 
     async def on_timeline(self, room_id: str, ev: dict) -> None:
         if ev.get("sender") != self.owner or not self.owner or ev.get("sender") == self.user_id:
@@ -643,6 +671,8 @@ async def amain() -> None:
         door.stopping = True
         stopper.cancel()
         life.cancel()
+        for t in list(door.background):
+            t.cancel()
         for t in list(door.running.values()):
             t.cancel.set()
         pending = [t for t in [*door.tasks, life] if not t.done()]
