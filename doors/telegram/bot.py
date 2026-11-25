@@ -4,7 +4,9 @@ Run: `python -m doors.telegram` (reads config/archi.env under ARCHI_HOME).
 
 Updates are converted back to the plain JSON the Bot API documents and handled by `Door.handle_update`, so
 the door does not depend on aiogram knowing the newest fields (topics in private chats, drafts, the
-`stopped_message_generation` update) and its logic is testable with plain dicts.
+`stopped_message_generation` update) and its logic is testable with plain dicts. What every door does the same
+way (turns, delivery, the shared commands, the learning and jobs contracts) is core.door.BaseDoor; this module
+adds Telegram: pairing, topics, drafts, albums, and sending.
 """
 from __future__ import annotations
 
@@ -13,18 +15,18 @@ import hmac
 import logging
 import os
 import re
-import shutil
 import sys
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 
-from core import afterturn, engine, jobs, running, voice
+from core import voice
 from core.config import Config
 from core.conversations import Conversation, Registry, make_key, parse_key
-from core.markers import split_answer
-from core.prompt import base_system_prompt, stamp
-from core.status import TurnStatus, clock
+from core.door import (KEY_REQUEST, KEY_REQUEST_EN, BaseDoor, RunningTurn, command_list,  # noqa: F401
+                       parse_model_args)
+from core.inbox import file_prompt
+from core.prompt import base_system_prompt
+from core.status import TurnStatus
 
 from . import media, render
 from .api import TgError
@@ -33,29 +35,14 @@ from .topics import Topics, is_service, title_from_text
 
 log_ = logging.getLogger("archi.telegram")
 
-COMMANDS = [
-    ("new", "Start a new session in this topic"),
-    ("status", "Model, session and what is running"),
-    ("model", "Show or change the model for this topic"),
-    ("provider", "Show or switch the agent: claude or codex"),
-    ("topics", "Known topics of this chat"),
-    ("stop", "Stop the task running in this topic"),
-    ("learn", "Review this conversation now and save the lessons"),
-    ("help", "What I can do here"),
-]
+COMMANDS = command_list("topic", extra=[("topics", "Known topics of this chat")])
 ALLOWED_UPDATES = ["message", "my_chat_member", "stopped_message_generation"]
 BOT_SETTINGS = dict(has_topics_enabled=True, allows_users_to_create_topics=True, has_topic_sidebar=True,
                     can_read_all_group_messages=True, can_join_groups=True)
-KEY_REQUEST = {
-    "ru": "Дай мне ключ, я внесу его в конфиг",
-    "uk": "Дай мне ключ, я внесу его в конфиг",
-}
-KEY_REQUEST_EN = "Send me an OpenAI API key and I will add it to the config"
 DOOR = "telegram"
 DOWNTIME_UNCONFIRM_S = 20 * 3600   # Telegram keeps undelivered updates for 24 h: a rename during a longer
                                    # outage is lost, so stored titles can no longer be trusted for probing
 HEARTBEAT_S = 300
-JOBS_POLL_S = 5
 PAIR_MAX_FAILURES = 20          # wrong codes before the pairing code is revoked (brute-force guard)
 FIRST_RUN_PROMPT = (
     "[Message from the Archi door, not written by the owner] The owner has just paired with you in this "
@@ -72,35 +59,22 @@ REPAIRED_PROMPT = (
 )
 
 
-@dataclass
-class RunningTurn:
-    key: str
-    cancel: asyncio.Event
-    status: TurnStatus
-    live: LiveStatus | None = None
-    started: float = field(default_factory=time.time)
+class Door(BaseDoor):
+    DOOR = DOOR
+    PREFIX = "tg"
+    PLACE = "topic"
+    PLACES = "topics"
+    COMMANDS = COMMANDS
 
-
-class Door:
     def __init__(self, api, cfg: Config | None = None, registry: Registry | None = None, *, runner=None,
                  log=None, debounce_s: float = 0.8, album_s: float = 1.5):
+        super().__init__(cfg, registry, runner=runner,
+                         log=log or (lambda *a: log_.info(" ".join(str(x) for x in a))), debounce_s=debounce_s)
         self.api = api
-        self.cfg = cfg or Config()
-        self.home = self.cfg.home
-        self.registry = registry or Registry(self.home / "state")
-        self.runner = runner or engine.run_turn
-        self.log = log or (lambda *a: log_.info(" ".join(str(x) for x in a)))
         self.topics = Topics(api, self.registry, self.notify_main, log=self.log)
-        self.debounce_s = debounce_s
         self.album_s = album_s
         self.me: dict = {}
-        self.running: dict[str, RunningTurn] = {}
-        self.tasks: set[asyncio.Task] = set()
-        self.started = time.time()
-        self._buffers: dict[str, dict] = {}
-        self._owner_lang = ""
         self._pair_failures = 0
-        self.stopping = False          # set when the process shuts down: running turns are not reported
 
     # ================================================================== startup
     async def startup(self) -> None:
@@ -123,19 +97,6 @@ class Door:
         self.heartbeat()
         await self._report_interrupted()
 
-    async def _report_interrupted(self) -> None:
-        """Turns that were running when the previous door process ended were killed with it (their run
-        markers are still there): say so in the conversations where they ran."""
-        for m in running.leftovers(DOOR, self.home):
-            key = str(m.get("key") or "")
-            if not key.startswith("tg:"):
-                continue
-            try:
-                await self.send_text(key, "⚠️ I was restarted while a task was running here, so it was "
-                                          "interrupted. Send the request again if it is still needed.")
-            except Exception as e:  # noqa: BLE001
-                self.log("restart notice failed", key, repr(e))
-
     # ================================================================== dispatch
     async def handle_update(self, upd: dict) -> None:
         try:
@@ -148,12 +109,6 @@ class Door:
         except Exception as e:  # noqa: BLE001 - one bad update must never stop the door
             self.log("update failed", repr(e))
             log_.exception("update failed")
-
-    def spawn(self, coro) -> asyncio.Task:
-        t = asyncio.create_task(coro)
-        self.tasks.add(t)
-        t.add_done_callback(self.tasks.discard)
-        return t
 
     def _trusted_chat(self, chat: dict, owner: int | None) -> bool:
         if owner is None:
@@ -240,34 +195,13 @@ class Door:
         prompt = (FIRST_RUN_PROMPT if not self.cfg.has_name() else REPAIRED_PROMPT).format(lang=hint)
         self.spawn(self.turn(conv.key, prompt))
 
-    def _lang(self) -> str:
-        return (getattr(self, "_owner_lang", "") or "").split("-")[0].lower()
-
     async def _store_key(self, conv: Conversation, msg: dict, key: str) -> None:
         try:
             await self.api.call("deleteMessage", chat_id=msg["chat"]["id"], message_id=msg["message_id"])
             deleted = True
         except TgError:
             deleted = False
-        verdict = await voice.check_key(key)
-        if verdict is False:
-            await self.send_text(conv.key, "⚠️ OpenAI rejected this key, so I did not save it.")
-            return
-        self.cfg.set("OPENAI_API_KEY", key)
-        self.log("OPENAI_API_KEY stored", "verified" if verdict else "not verified")
-        if self._lang() in ("ru", "uk"):
-            text = "✅ Ключ сохранён в конфиг. Пришли голосовое ещё раз."
-            if not verdict:
-                text += " (Проверить ключ сейчас не получилось, он будет опробован на следующем голосовом.)"
-            if not deleted:
-                text += " Удали своё сообщение с ключом: у меня не вышло."
-        else:
-            text = "✅ Key saved to the config. Please send the voice note again."
-            if not verdict:
-                text += " (I could not verify it right now; it will be tried on the next voice note.)"
-            if not deleted:
-                text += " Please delete your message with the key, I could not do it."
-        await self.send_text(conv.key, text)
+        await self.store_openai_key(conv.key, key, deleted)
 
     # ================================================================== commands
     async def _command(self, conv: Conversation, msg: dict, text: str) -> bool:
@@ -275,117 +209,10 @@ class Door:
         name, _, target = head.partition("@")
         if target and self.me.get("username") and target.lower() != str(self.me["username"]).lower():
             return True   # addressed to another bot in a group
-        name = name.lower()
-        handler = {"new": self._cmd_new, "status": self._cmd_status, "model": self._cmd_model,
-                   "provider": self._cmd_provider, "topics": self._cmd_topics, "stop": self._cmd_stop,
-                   "learn": self._cmd_learn, "help": self._cmd_help, "start": self._cmd_help}.get(name)
-        if handler is None:
-            return False   # unknown slash text is a normal message (the engine neutralises the slash)
-        self.spawn(handler(conv, args.strip()))   # commands do not wait for the running turn
-        return True
+        return self.run_command(conv, name, args)
 
-    def _provider(self, conv: Conversation) -> str:
-        return conv.provider if conv.provider in engine.PROVIDERS else self.cfg.provider()
-
-    def _model(self, conv: Conversation, provider: str) -> tuple[str, str]:
-        """(model, effort) for a turn: the topic's override, else the config default of its provider.
-        The override always belongs to the topic's current provider (switching providers clears it)."""
-        if provider == "codex":
-            return conv.model or self.cfg.get("CODEX_MODEL"), ""
-        effort = conv.effort or self.cfg.get("CLAUDE_EFFORT")
-        return conv.model or self.cfg.get("CLAUDE_MODEL"), (effort if effort in engine.EFFORTS else "")
-
-    async def _cmd_new(self, conv: Conversation, args: str) -> None:
-        had = self.registry.clear_session(conv.key)
-        busy = conv.key in self.running
-        text = "🧹 New session for this topic: I start from a clean slate here. Other topics are not affected."
-        if not had:
-            text = "🧹 There was no session in this topic yet, so nothing was lost. The next message starts one."
-        if busy:
-            text += "\nA task is still running here; its result will not continue in the new session."
-        await self.send_text(conv.key, text)
-
-    async def _cmd_status(self, conv: Conversation, args: str) -> None:
-        conv = self.registry.get(conv.key) or conv
-        provider = self._provider(conv)
-        model, effort = self._model(conv, provider)
-        sid = conv.sessions.get(provider)
-        run = self.running.get(conv.key)
-        open_convs = [c for c in self.registry.all(door="tg") if c.state != "deleted"]
-        up = int(time.time() - self.started)
-        lines = [
-            f"**{conv.display_title()}** · {conv.state}",
-            f"· agent: `{provider}` · model: `{model or 'CLI default'}`"
-            + (f" · effort: {effort or 'default'}" if provider == "claude" else ""),
-            f"· session: `{sid[:8]}…`" if sid else "· session: none yet (the next message starts one)",
-        ]
-        if run:
-            lines.append(f"· running: {clock(run.status.elapsed)}, {len(run.status.steps)} steps"
-                         + (f", now: {run.status.current}" if run.status.current else ""))
-        else:
-            lines.append("· running: nothing")
-        lines += [f"· conversations: {len(open_convs)}, running now: {len(self.running)}",
-                  f"· voice notes: {'on' if voice.available(self.cfg) else 'off (no OpenAI key)'}",
-                  f"· up for {up // 3600} h {up % 3600 // 60} min"]
-        await self.send_text(conv.key, "\n".join(lines))
-
-    async def _cmd_model(self, conv: Conversation, args: str) -> None:
-        conv = self.registry.get(conv.key) or conv
-        provider = self._provider(conv)
-        model, effort = self._model(conv, provider)
-        if not args:
-            await self.send_text(conv.key, "\n".join([
-                f"Model in this topic: `{model or 'CLI default'}`"
-                + (f" · effort: {effort or 'default'}" if provider == "claude" else "") + f" ({provider})",
-                "",
-                "· `/model sonnet` or `/model claude-sonnet-4-5`: another model for this topic",
-                "· `/model opus high`: model and reasoning effort; `/model high`: effort only",
-                "· `/model default`: back to the default from the config",
-                f"· efforts: {', '.join(engine.EFFORTS)}",
-            ]))
-            return
-        new_model, new_effort, err = parse_model_args(args.split(), provider)
-        if err:
-            await self.send_text(conv.key, f"⚠️ {err}")
-            return
-        if new_model == "default":
-            self.registry.upsert(conv.key, model="", effort="")
-            conv = self.registry.get(conv.key)
-            m, e = self._model(conv, provider)
-            await self.send_text(conv.key, f"✅ Back to the default: `{m or 'CLI default'}`")
-            return
-        cand_model = new_model or model
-        cand_effort = new_effort if new_effort is not None else ("" if new_model else effort)
-        ok, why = await engine.probe_model(provider, cand_model, cand_effort, cwd=self.home)
-        if not ok:
-            await self.send_text(conv.key, f"⚠️ Not switched: `{cand_model}` did not answer a test request ({why}).")
-            return
-        self.registry.upsert(conv.key, model=new_model or conv.model, effort=cand_effort or "")
-        await self.send_text(conv.key, f"✅ This topic now uses `{cand_model or 'CLI default'}`"
-                                       + (f" with effort {cand_effort}" if cand_effort else "")
-                                       + ". Checked with a test request.")
-
-    async def _cmd_provider(self, conv: Conversation, args: str) -> None:
-        conv = self.registry.get(conv.key) or conv
-        current = self._provider(conv)
-        want = args.lower().strip()
-        if not want:
-            await self.send_text(conv.key, f"Agent in this topic: `{current}`. Switch: `/provider claude` or "
-                                           "`/provider codex`.")
-            return
-        if want not in engine.PROVIDERS:
-            await self.send_text(conv.key, "Usage: `/provider claude` or `/provider codex`")
-            return
-        binary = engine.resolve_binary(want)
-        if not (os.path.isabs(binary) and os.path.exists(binary)) and not shutil.which(binary):
-            await self.send_text(conv.key, f"⚠️ The `{want}` CLI is not installed on this server.")
-            return
-        changes = {"provider": want}
-        if want != current:
-            changes.update(model="", effort="")   # a model override never carries over to the other agent
-        self.registry.upsert(conv.key, **changes)
-        await self.send_text(conv.key, f"✅ This topic now talks to `{want}`. Sessions are kept per agent, "
-                                       f"so an earlier {want} session here continues.")
+    def command_handlers(self) -> dict:
+        return {**super().command_handlers(), "topics": self._cmd_topics, "start": self._cmd_help}
 
     async def _cmd_topics(self, conv: Conversation, args: str) -> None:
         convs = self.registry.all(door="tg", chat_id=conv.chat_id, include_deleted=args == "all")
@@ -398,32 +225,6 @@ class Door:
             lines.append(f"· {mark}{c.display_title()} ({where}) · {c.state} · {self._provider(c)} · {ago}")
         lines.append("\nCreate a topic: ask me, or create it in Telegram; every topic is its own conversation.")
         await self.send_text(conv.key, "\n".join(lines))
-
-    async def _cmd_stop(self, conv: Conversation, args: str) -> None:
-        run = self.running.get(conv.key)
-        if not run:
-            await self.send_text(conv.key, "Nothing is running in this topic.")
-            return
-        run.cancel.set()
-
-    async def _cmd_learn(self, conv: Conversation, args: str) -> None:
-        provider = self._provider(conv)
-        try:
-            text = await asyncio.to_thread(afterturn.review_now, DOOR, conv.key, provider=provider,
-                                           session_id=conv.sessions.get(provider), home=self.home)
-        except Exception as e:  # noqa: BLE001
-            text = f"⚠️ Could not start the review: {e!r}"
-        await self.send_text(conv.key, text)
-
-    async def _cmd_help(self, conv: Conversation, args: str) -> None:
-        name = self.cfg.agent_name()
-        await self.send_text(conv.key, "\n".join([
-            f"**{name}**: every topic is a separate conversation, topics run in parallel.",
-            "",
-            *[f"· /{c} — {d}" for c, d in COMMANDS],
-            "",
-            "Send text, photos, files or voice notes. Commands answer right away, even while a task runs.",
-        ]))
 
     async def on_stopped(self, upd: dict) -> None:
         chat = upd.get("chat") or {}
@@ -441,22 +242,6 @@ class Door:
         run.cancel.set()
 
     # ================================================================== buffering
-    def _buffer_text(self, key: str, text: str) -> None:
-        """Telegram splits a long paste into several messages a moment apart: merge them into one turn."""
-        buf = self._buffers.get(key)
-        if buf and buf.get("timer"):
-            buf["timer"].cancel()
-        else:
-            buf = self._buffers[key] = {"parts": []}
-        buf["parts"].append(text)
-        buf["timer"] = self.spawn(self._flush_text(key))
-
-    async def _flush_text(self, key: str) -> None:
-        await asyncio.sleep(self.debounce_s)
-        buf = self._buffers.pop(key, None)
-        if buf:
-            self.spawn(self.turn(key, "\n".join(buf["parts"])))
-
     def _buffer_photo(self, conv: Conversation, msg: dict, obj: dict) -> None:
         gid = msg.get("media_group_id") or f"single-{msg.get('message_id')}"
         bkey = f"{conv.key}|photo|{gid}"
@@ -495,24 +280,14 @@ class Door:
     # ================================================================== media turns
     async def _voice_turn(self, conv: Conversation, msg: dict, obj: dict) -> None:
         if not voice.available(self.cfg):
-            await self.send_text(conv.key, KEY_REQUEST.get(self._lang(), KEY_REQUEST_EN))
+            await self.ask_for_voice_key(conv.key)
             return
         try:
             path = await media.save_temp(self.api, obj, ".ogg")
         except TgError as e:
             await self.send_text(conv.key, f"⚠️ I could not download the voice note: {e.description}")
             return
-        try:
-            text = await voice.transcribe(str(path), self.cfg)
-        except Exception as e:  # noqa: BLE001
-            await self.send_text(conv.key, f"⚠️ Transcription failed: {e}")
-            return
-        finally:
-            path.unlink(missing_ok=True)
-        if not text:
-            await self.send_text(conv.key, "⚠️ I could not make out any speech in that voice note.")
-            return
-        await self.turn(conv.key, f"[Voice message, transcribed automatically]\n{text}")
+        await self.voice_turn(conv.key, path)
 
     async def _file_turn(self, conv: Conversation, msg: dict, kind: str, obj: dict) -> None:
         try:
@@ -520,13 +295,8 @@ class Door:
         except TgError as e:
             await self.send_text(conv.key, f"⚠️ I could not download the file: {e.description}")
             return
-        caption = (msg.get("caption") or "").strip()
-        prompt = (f"The owner sent a file ({kind}); it is saved at: {dest}\n"
-                  f"Original name: {obj.get('file_name') or dest.name}\n"
-                  "Do NOT execute it automatically: read it first.\n"
-                  + (f"The owner's instruction with the file:\n{caption}" if caption else
-                     "There was no instruction: say what the file is and what you propose to do, then wait."))
-        await self.turn(conv.key, prompt)
+        caption = msg.get("caption") or ""
+        await self.turn(conv.key, file_prompt(kind, dest, obj.get("file_name") or dest.name, caption))
 
     def _maybe_auto_title(self, conv: Conversation, text: str) -> None:
         """Topics the owner opened without a name ("New Chat") get one from their first message."""
@@ -538,7 +308,9 @@ class Door:
             self.spawn(self.topics.rename(conv, title))
 
     # ================================================================== turns
-    def system_prompt(self, conv: Conversation, chat_title: str = "", provider: str | None = None) -> str:
+    def system_prompt(self, conv: Conversation, chat_title: str | None = None, provider: str | None = None) -> str:
+        if chat_title is None:
+            chat_title = self.registry.chat(conv.chat_id).get("title", "")
         if conv.is_main:
             where = ("the main part of the private chat, outside any topic" if conv.kind == "dm"
                      else f"the General topic of the group «{chat_title or conv.chat_id}»")
@@ -571,109 +343,14 @@ class Door:
             "PATH": path if code_dir in path.split(":") else f"{code_dir}:{path}",
         }
 
-    async def turn(self, key: str, prompt: str, images: list[str] | None = None) -> None:
-        """Run one turn of conversation `key` (queued behind a running one) and deliver the answer."""
-        async with self.registry.lock(key):
-            conv = self.registry.get(key)
-            if conv is None or conv.state == "deleted":
-                return
-            provider = self._provider(conv)
-            model, effort = self._model(conv, provider)
-            gen = self.registry.generation(key)
-            st = TurnStatus()
-            live = LiveStatus(self.api, conv.chat_id, conv.thread_id, conv.kind, st, log=self.log)
-            run = RunningTurn(key, asyncio.Event(), st, live)
-            self.running[key] = run
-            # The marker covers the whole turn INCLUDING delivery: `archi restart --when-idle` must not see
-            # "idle" between the CLI's exit and the answer reaching Telegram.
-            try:
-                marker = running.start(DOOR, key, self.home, hard_s=engine.Limits().hard_s)
-            except OSError as e:
-                marker = None
-                self.log("run marker not written", key, repr(e))
-            keep_marker = False
-            chat_title = self.registry.chat(conv.chat_id).get("title", "")
+    def make_live(self, conv: Conversation, st: TurnStatus, src=None) -> LiveStatus:
+        return LiveStatus(self.api, conv.chat_id, conv.thread_id, conv.kind, st, log=self.log)
 
-            def on_event(ev: engine.Event) -> None:
-                st.feed(ev)
-                live.poke()
-
-            try:
-                await live.start()
-                res = None
-                try:
-                    res = await self.runner(provider, f"{stamp(self.cfg)}\n{prompt}", conv.sessions.get(provider),
-                                            cwd=self.home, images=images, on_event=on_event,
-                                            env=self.turn_env(conv),
-                                            system_prompt=self.system_prompt(conv, chat_title, provider),
-                                            model=model, effort=effort, cancel=run.cancel)
-                except Exception as e:  # noqa: BLE001
-                    res = engine.TurnResult("", None, False, f"internal error: {e!r}")
-                finally:
-                    self.running.pop(key, None)
-                    st.finish(res or engine.TurnResult("", None, False, "interrupted"))
-                    await live.stop(bool(res and res.ok))
-                try:
-                    if res.session_id:
-                        self.registry.set_session(key, provider, res.session_id, gen=gen)
-                    self.registry.upsert(key, last_turn_at=time.time())
-                except Exception as e:  # noqa: BLE001 - bookkeeping must never eat the answer
-                    self.log("session save failed", key, repr(e))
-                if self.stopping:
-                    # Killed by the shutdown, not by the owner: the next door process reports it as
-                    # interrupted (the marker stays), nothing is sent now.
-                    keep_marker = True
-                    return
-                await self.deliver(key, res, st)
-                if res.ok and res.session_id:
-                    await self._after_turn(key, provider, res.session_id, prompt, res.answer, st.steps)
-            except asyncio.CancelledError:
-                keep_marker = True
-                raise
-            finally:
-                if not keep_marker:
-                    running.finish(marker)
-
-    async def _after_turn(self, key: str, provider: str, session_id: str, prompt: str, answer: str,
-                          steps: list[str]) -> None:
-        try:
-            kind = await asyncio.to_thread(afterturn.turn_finished, DOOR, key, provider=provider,
-                                           session_id=session_id, tool_calls=len(steps), home=self.home,
-                                           prompt=prompt, answer=answer, steps=list(steps))
-            if kind:
-                self.log("learning review started", key, kind)
-        except Exception as e:  # noqa: BLE001 - the learning loop must never break the door
-            self.log("learning hook failed", key, repr(e))
-
-    # ================================================================== durable jobs
-    async def report_jobs(self) -> int:
-        """Start a report turn for every finished job of this door. Returns how many were started."""
-        started = 0
-        for job in await asyncio.to_thread(jobs.finished_unreported, DOOR, self.home):
-            key = str(job.get("conversation") or "")
-            conv = self.registry.get(key) if key else None
-            if conv is None:
-                self.log("job without a known conversation", job.get("id"), key)
-                await asyncio.to_thread(jobs.mark_reported, str(job.get("id")), self.home)
-                continue
-            if conv.state == "deleted":
-                # The topic is gone: report in the main part of the same chat instead.
-                key = make_key("tg", conv.chat_id, None)
-                self.registry.ensure(key, kind=conv.kind, state="open", title="main")
-            self.spawn(self.turn(key, jobs.report_prompt(job)))
-            await asyncio.to_thread(jobs.mark_reported, str(job.get("id")), self.home)
-            started += 1
-        return started
-
-    async def jobs_loop(self, interval: float = JOBS_POLL_S) -> None:
-        while True:
-            try:
-                await self.report_jobs()
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:  # noqa: BLE001
-                self.log("jobs loop error", repr(e))
-            await asyncio.sleep(interval)
+    def job_fallback(self, conv: Conversation) -> str | None:
+        """A deleted topic reports a finished job in the main part of the same chat."""
+        key = make_key("tg", conv.chat_id, None)
+        self.registry.ensure(key, kind=conv.kind, state="open", title="main")
+        return key
 
     # ================================================================== downtime
     @property
@@ -712,39 +389,6 @@ class Door:
             self.heartbeat()
             await asyncio.sleep(interval)
 
-    async def deliver(self, key: str, res: engine.TurnResult, st: TurnStatus) -> None:
-        if res.cancelled:
-            await self.send_text(key, f"⏹ Stopped after {clock(st.elapsed)}.")
-            return
-        text = res.answer or ""
-        if not res.ok:
-            text = (text + "\n\n" if text else "") + f"⚠️ {res.error or 'the agent did not answer'}"
-        clean, files, voices = split_answer(text)
-        if clean and not await self.send_text(key, clean):
-            return
-        _door, chat, thread = parse_key(key)
-        for lang, speech, speed in voices:
-            ogg = await voice.synthesize(speech, self.cfg, speed=speed) if voice.available(self.cfg) else None
-            if ogg is None:
-                await self.send_text(key, speech)
-                continue
-            try:
-                await media.send_voice(self.api, int(chat), thread, ogg)
-            except TgError as e:
-                if not await self._send_failed(key, e):
-                    return
-            finally:
-                ogg.unlink(missing_ok=True)
-        for path in files:
-            try:
-                problem = await media.send_file(self.api, int(chat), thread, path)
-            except TgError as e:
-                if not await self._send_failed(key, e):
-                    return
-                problem = f"⚠️ Could not send {path}: {e.description}"
-            if problem:
-                await self.send_text(key, problem)
-
     # ================================================================== sending
     async def _send_failed(self, key: str, err: TgError) -> bool:
         """Handle a failed send to a conversation. False = the topic is gone, stop sending there."""
@@ -752,6 +396,26 @@ class Door:
             await self.topics.gone(key, "send error")
             return False
         self.log("send failed", key, err.description)
+        return True
+
+    async def send_voice(self, key: str, ogg: Path) -> bool:
+        _door, chat, thread = parse_key(key)
+        try:
+            await media.send_voice(self.api, int(chat), thread, ogg)
+        except TgError as e:
+            return await self._send_failed(key, e)
+        return True
+
+    async def send_file(self, key: str, path: str) -> bool:
+        _door, chat, thread = parse_key(key)
+        try:
+            problem = await media.send_file(self.api, int(chat), thread, path)
+        except TgError as e:
+            if not await self._send_failed(key, e):
+                return False
+            problem = f"⚠️ Could not send {path}: {e.description}"
+        if problem:
+            await self.send_text(key, problem)
         return True
 
     async def send_text(self, key: str, md: str) -> bool:
@@ -778,31 +442,6 @@ class Door:
 
     async def notify_main(self, chat_id: int, text: str) -> None:
         await self.api.call("sendMessage", chat_id=chat_id, text=text)
-
-
-def parse_model_args(args: list[str], provider: str) -> tuple[str | None, str | None, str | None]:
-    """`/model` arguments -> (model | None, effort | "" | None, error | None).
-    model "default" = drop the override; effort None = not mentioned, "" = back to the default."""
-    model = effort = None
-    for raw in args:
-        w = raw.strip()
-        low = w.lower()
-        if low in engine.EFFORTS:
-            if provider != "claude":
-                return None, None, "reasoning effort can only be set for claude"
-            effort = low
-        elif low in ("default", "reset"):
-            if model is None and effort is None and len(args) == 1:
-                return "default", None, None
-            effort = ""
-        elif model is None:
-            if provider == "claude" and not low.startswith("claude-") and low not in ("opus", "sonnet", "haiku",
-                                                                                         "fable"):
-                low = "claude-" + low.replace(".", "-").replace("_", "-")
-            model = low if provider == "claude" else w
-        else:
-            return None, None, f"I did not understand «{raw}»; efforts are {', '.join(engine.EFFORTS)}"
-    return model, effort, None
 
 
 def _ago(seconds: float) -> str:

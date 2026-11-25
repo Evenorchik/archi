@@ -80,3 +80,11 @@ def test_monster_line_is_split():
 
 def test_utf16_length_counts_emoji_as_two():
     assert render.utf16_len("😀a") == 3
+
+
+def test_shared_splitter_measures_utf8_for_matrix():
+    from core.markdown import split_markdown, utf8_len
+    text = "ж" * 30000                               # one monster line, 2 bytes per character
+    parts = split_markdown(text, 16000, measure=utf8_len)
+    assert len(parts) >= 4 and all(utf8_len(p) <= 16000 for p in parts) and "".join(parts) == text
+

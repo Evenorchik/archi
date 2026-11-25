@@ -42,6 +42,33 @@ def test_keys():
     assert make_key("tg", 1001, None) == "tg:1001:main"
     assert parse_key("tg:-100500:7") == ("tg", "-100500", 7)
     assert parse_key("tg:1001:main") == ("tg", "1001", None)
+    assert make_key("mx", "!room:example.org:8448") == "mx:!room:example.org:8448"
+    assert parse_key("mx:!room:example.org:8448") == ("mx", "!room:example.org:8448", None)
+    assert parse_key("mx:!v12room") == ("mx", "!v12room", None)
+
+
+def test_registry_mixes_telegram_and_matrix(tmp_path):
+    reg = Registry(tmp_path)
+    reg.upsert("tg:1001:5", title="Topic")
+    reg.upsert("mx:!b:example.org", title="")
+    reg.upsert("mx:!a:example.org", title="Room A")
+    reg.upsert("tg:-100:main")
+    assert [c.key for c in reg.all()] == ["mx:!a:example.org", "mx:!b:example.org", "tg:-100:main", "tg:1001:5"]
+    room = reg.get("mx:!b:example.org")
+    assert room.chat_id == "!b:example.org" and room.thread_id is None and room.display_title() == "unnamed room"
+    assert reg.get("tg:1001:5").chat_id == 1001
+    reg.update_chat("!a:example.org", door="mx", encrypted=False)
+    reg.update_chat(1001, owner_seen=True)
+    assert list(reg.chats(door="mx")) == ["!a:example.org"] and len(reg.chats()) == 2
+
+
+def test_inbox_names_never_collide(tmp_path):
+    from core.inbox import file_prompt, inbox_path
+    first = inbox_path(tmp_path, "../x y.txt", now=1_800_000_000)
+    first.write_text("1")
+    second = inbox_path(tmp_path, "../x y.txt", now=1_800_000_000)
+    assert first.name.endswith("_x_y.txt") and second != first and second.parent == tmp_path
+    assert "Do NOT execute it" in file_prompt("file", second, "x y.txt")
 
 
 def test_registry_persists_and_archives(tmp_path):
