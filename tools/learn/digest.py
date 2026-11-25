@@ -16,7 +16,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from core.learnlog import STAMP_RE  # noqa: E402
-from tools.learn.stores import redact  # noqa: E402
+from core.redact import redact  # noqa: E402
 
 
 def _cut(text: str, n: int) -> str:
@@ -53,7 +53,7 @@ def build(turns: list[dict], *, max_turns: int = 40, budget: int = 60000, recent
         if steps:
             listed = steps if recent else steps[:6]
             more = f" … +{len(steps) - len(listed)}" if len(listed) < len(steps) else ""
-            lines.append(f"[steps ×{len(steps)}: " + "; ".join(_cut(s, 80) for s in listed) + more + "]")
+            lines.append(f"[steps ×{len(steps)}: " + "; ".join(_cut(redact(s), 80) for s in listed) + more + "]")
         answer = str(t.get("answer") or "")
         if answer.strip():
             lines.append(f"### AGENT\n{_cut(redact(answer), a_cap)}")

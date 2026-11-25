@@ -86,7 +86,8 @@ workflow, anything that may take more than a few minutes), start it as a durable
 - `python3 tools/workflow_job.py launch --script <path.js> [--args-file <json>] [--label L]`: a Claude workflow
   script, run to completion (Claude only).
 
-A job runs outside the door's service, so restarting a door does not kill it. It belongs to the conversation
+A job runs outside the door's service, so restarting a door does not kill it (unless `archi job` warned that
+systemd-run failed: then avoid restarts until it ends). It belongs to the conversation
 it was started from: when it ends, the door starts a new turn in that conversation with the outcome, and you
 report it to the owner. So start it, tell the owner in one line what runs and that the result will follow,
 and finish your answer. Check jobs with `archi job list` / `archi job show <id>` (never with `ps`: jobs run

@@ -74,7 +74,10 @@ def review_one(home: Path, key: str, *, kind: str = "combined", dry: bool = Fals
         kind = "memory"
     turns = learnlog.pending_turns(home, key, kind)
     if not turns:
-        return {"conversation": key, "skipped": "nothing new since the last review"}
+        # /learn promised a notice: when another review took these turns meanwhile, say so.
+        notified = bool(explicit and notify_owner and not dry and cfg.get("notify", True) and notify.post(
+            key, "🧠 **Session review**: nothing new since the last review.", silent=True, home=home))
+        return {"conversation": key, "skipped": "nothing new since the last review", "notified": notified}
     with_skills = kind in ("skill", "combined") and skill_mode != "off"
     name = f"{learnlog.run_stamp()}-{secrets.token_hex(2)}"
     d = digest.build(turns, max_turns=int(learnlog.number(cfg, "max_turns")),
@@ -93,10 +96,12 @@ def review_one(home: Path, key: str, *, kind: str = "combined", dry: bool = Fals
     res = reviewer.run(provider, prompt, workdir=st.root, write_dirs=st.write_dirs(), model=model, effort=effort,
                        timeout_s=learnlog.number(cfg, "timeout_s"), cfg=archi)
 
+    restored = stores.undo_memory_deletions(st)
     problems = stores.memory_problems(st)
     fixes = [] if problems else stores.repair_index(st.memory) + stores.finalize_archives(st.memory, st.base / "memory")
     memory_lines = [] if problems else stores.describe_memory(st)
     small, big, rolled = stores.settle_skills(st, int(learnlog.number(cfg, "big_skill_lines")))
+    rolled = restored + rolled
     proposals = sorted(stores.snapshot(st.proposals)) if st.proposals else []
 
     applied: dict = {}

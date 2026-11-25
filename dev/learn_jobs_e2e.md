@@ -3,7 +3,7 @@
 Run on 2026-11-25 on a Linux host with systemd 259, as root, with Claude Code CLI 2.1.325 signed in with its own
 login. Everything ran in temporary directories (`ARCHI_HOME`, `ARCHI_MEMORY_DIR`, a copy of `skills/`);
 transient units were named `archi-test-*` (`ARCHI_UNIT_PREFIX=archi-test`) and collected. Nothing of it is in
-the working tree. Unit tests: `timeout 300 .venv/bin/python -m pytest -q` (119 passed at the time).
+the working tree. Unit tests: `timeout 300 .venv/bin/python -m pytest -q` (128 passed after the review fixes).
 
 ## What must not change
 A fingerprint script hashed, before and after: every Claude Code memory directory under `~/.claude/projects/`,
@@ -55,6 +55,19 @@ All checks passed:
   the job failed ("the runner … ended without recording a result").
 - `archi job agent --model claude-haiku-4-5 "Reply with exactly: JOB-OK"`: a nested `engine.run_turn` in a fresh
   session as a transient unit, done in 4 s, result `JOB-OK`, unit collected.
+
+## Independent code review
+After the live runs an independent review (an agent given the code, not these notes) reproduced twelve
+issues with throwaway scripts. Fixed, each with a regression test: a `keep_backups` of 0 pruned the run's own
+base copy (rollback and archiving then lost data); a reviewer that deletes a memory file in its stage (a Codex
+sandbox can) reached the real store; archiving a name that already had an `.archive/` copy dropped the newer
+text; a last turn over 64 KB made reviewed turns pending again, and a reset log kept re-reviewing; `/learn`
+counted turns its review would not see and could stay silent; the hook held the shared lock while systemd-run
+ran; the stores were read twice while staging; step labels reached the reviewer unredacted; secret-looking
+environment values (`*_KEY`, `*_DSN`, URLs with a password) were kept in a job's spec, and a job's command was
+used as its unit description; a failed `mark_reported` write re-offered the job every poll; `kill_tree` could
+SIGKILL a pid reused during its grace period. Two findings are in the door, see the stage report: the report
+turn is marked reported before it is delivered, so a restart in between loses that report.
 
 ## Not verified live
 - **Codex**: not installed on this host. The Codex reviewer (`codex -a never exec -s workspace-write

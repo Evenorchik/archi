@@ -66,14 +66,15 @@ def _run(home: Path, cfg: dict, real: Path, *, dry: bool, notify_owner: bool) ->
                        timeout_s=max(learnlog.number(cfg, "timeout_s"), 1800), cfg=archi)
     report = (res.text or "").strip()
 
+    restored = stores.undo_memory_deletions(st)
     problems = stores.memory_problems(st)
     fixes = [] if problems else stores.repair_index(st.memory) + stores.finalize_archives(st.memory, st.base / "memory")
-    lines = [] if problems else [line for _, line in stores.describe_memory(st)]
+    lines = restored + ([] if problems else [line for _, line in stores.describe_memory(st)])
     applied = {}
     if res.ok and not dry and not problems:
         applied = stores.apply_memory(st, real)
         skipped = set(applied.get("skipped") or [])
-        lines = [line for rel, line in stores.describe_memory(st) if rel not in skipped]
+        lines = restored + [line for rel, line in stores.describe_memory(st) if rel not in skipped]
         lines += [f"kept the live version of {x}: it changed while the curator ran" for x in sorted(skipped)]
 
     if res.ok:

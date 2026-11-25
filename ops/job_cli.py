@@ -21,6 +21,8 @@ def _started(job: dict) -> int:
     print(f"job {job['id']} started: «{job['label']}» (runs outside this turn, as {how})")
     print(f"When it ends, a new turn in {job['conversation']} gets the result and reports it.")
     print(f"Check it: archi job show {job['id']} · stop it: archi job cancel {job['id']}")
+    if job.get("via_warning"):
+        print(f"warning: {job['via_warning']}")
     return 0
 
 

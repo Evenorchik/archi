@@ -205,21 +205,28 @@ def make_entry(*, door: str, provider: str, session_id: str | None, prompt: str,
 
 
 def _last_seq(path: Path) -> int:
-    """Sequence number of the last line of a log (reads only its tail)."""
-    try:
-        with open(path, "rb") as fh:
-            fh.seek(0, os.SEEK_END)
-            size = fh.tell()
-            fh.seek(max(0, size - 65536))
-            tail = fh.read().decode("utf-8", "replace").splitlines()
-    except OSError:
-        return 0
-    for line in reversed(tail):
+    """Sequence number of the last complete line of a log. Reads the tail, and more of it when the last
+    line is longer than the window (one turn can be a few hundred KB)."""
+    window = 65536
+    while True:
         try:
-            return int(json.loads(line).get("seq") or 0)
-        except (ValueError, AttributeError, TypeError):
-            continue
-    return 0
+            with open(path, "rb") as fh:
+                fh.seek(0, os.SEEK_END)
+                size = fh.tell()
+                fh.seek(max(0, size - window))
+                lines = fh.read().decode("utf-8", "replace").splitlines()
+        except OSError:
+            return 0
+        if size > window:
+            lines = lines[1:]          # the window starts inside a line
+        for line in reversed(lines):
+            try:
+                return int(json.loads(line).get("seq") or 0)
+            except (ValueError, AttributeError, TypeError):
+                continue
+        if size <= window:
+            return 0
+        window *= 4
 
 
 def append_turn(home: str | os.PathLike, key: str, entry: dict, last_seq: int = 0) -> int:
@@ -336,8 +343,11 @@ def set_watermark(home, key: str, seq: int, kind: str = "combined") -> None:
     with locked(home):
         data = jload(watermarks_path(home), {})
         entry = _wm_entry(data, key)
+        last = _last_seq(log_path(home, key))
         for k in (kind,) if kind in WM_KINDS else WM_KINDS:
-            entry[k] = max(int(seq), entry[k])
+            # A watermark beyond the end of the log belongs to a log that was reset: replace it, or every later
+            # review would start from the beginning again.
+            entry[k] = int(seq) if entry[k] > last else max(int(seq), entry[k])
         data[key] = entry
         jsave(watermarks_path(home), data)
 
@@ -424,14 +434,15 @@ def recent_runs(home, n: int = 5) -> list[dict]:
     return out
 
 
-def prune(d: Path, keep: int) -> None:
-    """Keep the newest `keep` entries of a directory (by modification time)."""
+def prune(d: Path, keep: int, protect: tuple[str, ...] | list[str] = ()) -> None:
+    """Keep the newest `keep` entries of a directory (by modification time); never the ones in `protect`."""
     if not d.is_dir():
         return
     try:
-        entries = sorted(d.iterdir(), key=lambda p: p.stat().st_mtime)
+        entries = sorted((p for p in d.iterdir() if p.name not in protect), key=lambda p: p.stat().st_mtime)
     except OSError:
         return
+    keep = max(0, keep - len([n for n in protect if (d / n).exists()]))
     for old in entries[:-keep] if keep > 0 else entries:
         if old.name.startswith("."):
             continue
