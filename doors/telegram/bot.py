@@ -75,6 +75,7 @@ class Door(BaseDoor):
         self.album_s = album_s
         self.me: dict = {}
         self._pair_failures = 0
+        self._pair_failures_code = ""   # the code the failures were counted against
 
     # ================================================================== startup
     async def startup(self) -> None:
@@ -172,6 +173,10 @@ class Door(BaseDoor):
         text = (msg.get("text") or "").strip()
         if text.lower().startswith("/start"):
             text = text[6:].strip()
+        if code != self._pair_failures_code:
+            # A new code (`archi pair`) starts a new count: failures against an old, revoked code must not
+            # make the first typo with the new one revoke it again.
+            self._pair_failures, self._pair_failures_code = 0, code
         if not code or not text or not hmac.compare_digest(text.encode(), code.encode()):
             if code and re.fullmatch(r"\d{4,10}", text):
                 self._pair_failures += 1
@@ -187,8 +192,11 @@ class Door(BaseDoor):
         lang = (msg["from"].get("language_code") or "").strip()
         if lang:
             self._owner_lang = lang
-        await self._send_plain(msg["chat"]["id"], msg.get("message_thread_id") if msg.get("is_topic_message")
-                               else None, "✅ Paired. You are my owner now; I answer only you.")
+        try:
+            await self._send_plain(msg["chat"]["id"], msg.get("message_thread_id") if msg.get("is_topic_message")
+                                   else None, "✅ Paired. You are my owner now; I answer only you.")
+        except TgError as e:   # the greeting below matters more than this line
+            self.log("pairing confirmation not sent", e.description)
         # The first turn is the door's, not the owner's: the agent introduces itself and asks for its name
         # ("First run" in CLAUDE.md), so a fresh install starts a conversation instead of waiting in silence.
         conv = self.topics.learn(msg)

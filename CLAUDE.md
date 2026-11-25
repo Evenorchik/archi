@@ -138,7 +138,8 @@ Text that other people will read (posts, emails, announcements, ads) goes throug
 
 ## Voice
 Voice notes are transcribed when `OPENAI_API_KEY` is set. If the owner sends you a key, store it with
-`archi config set OPENAI_API_KEY <key>`, never repeat it in chat, and confirm in one line.
+`archi setup voice --key-stdin <<< '<key>'` (stdin keeps it out of process lists; the key is checked first),
+never repeat it in chat, and confirm in one line.
 
 ## Owner's rules
 (Empty on a fresh install. Write here what the owner tells you about how to work with them.)

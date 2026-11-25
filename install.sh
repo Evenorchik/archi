@@ -18,6 +18,7 @@
 #     ARCHI_BOT_TOKEN, ARCHI_PROVIDER (claude|codex), ARCHI_OPENAI_KEY, ARCHI_CLAUDE_OAUTH_TOKEN,
 #     ARCHI_SKIP_CLI_INSTALL=1, ARCHI_SKIP_LOGIN=1, ARCHI_SKIP_PAIRING_WAIT=1, ARCHI_RECONFIGURE=1
 #   ARCHI_PAIRING_WAIT_S=900    how long the installer waits for you to send the pairing code
+#   ARCHI_DELETE_WEBHOOK=1      remove a webhook the bot already has (otherwise the setup stops: no polling)
 #
 # Exit codes: 0 done · 1 unexpected error · 2 not root · 3 unsupported system · 4 no systemd ·
 #             5 packages · 6 code download · 7 Python environment · 8 setup cancelled or failed · 9 service
@@ -28,7 +29,7 @@ ARCHI_HOME="${ARCHI_HOME:-/opt/archi}"
 ARCHI_REPO="${ARCHI_REPO:-https://github.com/Evenorchik/archi.git}"
 ARCHI_BRANCH="${ARCHI_BRANCH:-main}"
 ARCHI_SOURCE="${ARCHI_SOURCE:-}"
-NONINTERACTIVE="${ARCHI_NONINTERACTIVE:-0}"
+case "${ARCHI_NONINTERACTIVE:-0}" in 1|true|yes|on) NONINTERACTIVE=1 ;; *) NONINTERACTIVE=0 ;; esac
 PAIRING_WAIT_S="${ARCHI_PAIRING_WAIT_S:-900}"
 PACKAGES=(git curl ca-certificates python3 python3-venv ffmpeg)
 LOG_DIR="/var/log/archi-install"
@@ -57,7 +58,8 @@ check_system() {
     *" ubuntu "*|*" debian "*) ;;
     *) die 3 "Unsupported system: ${PRETTY_NAME:-unknown}. Archi supports Ubuntu 22.04+ and Debian 12+." ;;
   esac
-  local major="${VERSION_ID%%.*}"
+  local version="${VERSION_ID:-0}" major
+  major="${version%%.*}"
   if { [ "${ID:-}" = ubuntu ] && [ "${major:-0}" -lt 22 ]; } || { [ "${ID:-}" = debian ] && [ "${major:-0}" -lt 12 ]; }; then
     warn "${PRETTY_NAME:-this system} is older than supported (Ubuntu 22.04+, Debian 12+); continuing anyway."
   fi
@@ -131,11 +133,12 @@ install_code() {
 setup_venv() {
   step "Preparing the Python environment"
   local venv="$ARCHI_HOME/.venv"
+  mkdir -p "$LOG_DIR"
   if ! "$venv/bin/python" -c 'import sys' >/dev/null 2>&1; then
     rm -rf "$venv"
-    python3 -m venv "$venv" >"/tmp/archi-venv.log" 2>&1 || { cat /tmp/archi-venv.log >&2; die 7 "Creating the virtual environment failed."; }
+    python3 -m venv "$venv" >"$LOG_DIR/venv.log" 2>&1 \
+      || { tail -n 15 "$LOG_DIR/venv.log" >&2; die 7 "Creating the virtual environment failed; see $LOG_DIR/venv.log"; }
   fi
-  mkdir -p "$LOG_DIR"
   if ! "$venv/bin/python" -m pip install --quiet --disable-pip-version-check -r "$ARCHI_HOME/requirements.txt" >"$LOG_DIR/pip.log" 2>&1; then
     tail -n 15 "$LOG_DIR/pip.log" >&2 || true
     die 7 "Installing the Python requirements failed; the full log is in $LOG_DIR/pip.log"
@@ -145,7 +148,18 @@ setup_venv() {
 
 link_files() {
   chmod +x "$ARCHI_HOME/archi"
-  ln -sfn "$ARCHI_HOME/archi" /usr/local/bin/archi
+  local bin=/usr/local/bin/archi
+  if [ -e "$bin" ] || [ -L "$bin" ]; then
+    local target
+    target="$(readlink -f "$bin" 2>/dev/null || true)"
+    if [ "$target" != "$(readlink -f "$ARCHI_HOME/archi")" ] && ! [ -f "$(dirname "$target")/core/config.py" ]; then
+      local backup
+      backup="$bin.before-archi.$(date +%s)"
+      mv "$bin" "$backup"
+      warn "an existing $bin that is not Archi was moved to $backup"
+    fi
+  fi
+  ln -sfn "$ARCHI_HOME/archi" "$bin"
   # Both links are part of the repository; restore them if a copy lost them.
   [ -e "$ARCHI_HOME/AGENTS.md" ] || ln -sfn CLAUDE.md "$ARCHI_HOME/AGENTS.md"
   mkdir -p "$ARCHI_HOME/.claude"
@@ -164,7 +178,7 @@ run_setup() {
   else
     archi setup --noninteractive || rc=$?
   fi
-  [ "$rc" -eq 0 ] || die 8 "The setup did not finish. Run \`archi setup\` to complete it, then \`archi service install\`."
+  [ "$rc" -eq 0 ] || die 8 "The setup did not finish. Run the same install command again: it keeps what is done and continues from there."
 }
 
 start_service() {

@@ -69,14 +69,16 @@ def ask_secret(prompt: str, *, join_paste: bool = False) -> str:
     old = termios.tcgetattr(fd)
     new = termios.tcgetattr(fd)
     new[3] &= ~termios.ECHO
+    if join_paste:
+        # Byte by byte (no line discipline): in canonical mode the last line of a paste that has no final
+        # newline stays invisible to select(), and a token wrapped by the terminal was cut at its first line.
+        new[3] &= ~termios.ICANON
+        new[6][termios.VMIN], new[6][termios.VTIME] = 1, 0
     sys.stdout.write(prompt)
     sys.stdout.flush()
-    parts: list[str] = []
     try:
         termios.tcsetattr(fd, termios.TCSAFLUSH, new)
-        parts.append(_readline(fd))
-        while join_paste and select.select([fd], [], [], 0.4)[0]:
-            parts.append(_readline(fd))
+        text = _read_paste(fd) if join_paste else _readline(fd)
     except KeyboardInterrupt:
         raise Aborted("interrupted") from None
     finally:
@@ -84,8 +86,37 @@ def ask_secret(prompt: str, *, join_paste: bool = False) -> str:
         sys.stdout.write("\n")
         sys.stdout.flush()
     if join_paste:
-        return "".join("".join(p.split()) for p in parts)
-    return parts[0].strip()
+        return "".join(text.split())
+    return text.strip()
+
+
+def _read_paste(fd: int, quiet: float = 0.4) -> str:
+    """Raw input until Enter followed by `quiet` seconds of silence, so every line of a multi-line paste is
+    taken, including a last line that only gets its Enter from the user. Backspace edits, Ctrl+D on an empty
+    input ends it (Ctrl+C still raises KeyboardInterrupt: ISIG stays on)."""
+    buf = bytearray()
+    entered = False
+    while True:
+        if not select.select([fd], [], [], quiet if entered else None)[0]:
+            break
+        data = os.read(fd, 4096)
+        if not data:
+            if not buf:
+                raise Aborted("end of input")
+            break
+        for b in data:
+            if b in (0x7F, 0x08):
+                if buf:
+                    buf.pop()
+            elif b == 0x04 and not buf:
+                raise Aborted("end of input")
+            elif b in (0x0A, 0x0D):
+                entered = True
+                buf.append(0x0A)
+            else:
+                entered = False
+                buf.append(b)
+    return buf.decode("utf-8", "replace")
 
 
 def ask_yes(prompt: str, default: bool = True) -> bool:
@@ -198,12 +229,15 @@ def render(raw: str) -> str:
     return "\n".join("".join(x).rstrip() for x in lines)
 
 
+CTRL_C_WINDOW_S = 4.0   # three presses in this window end a captured screen (people do not press fast)
+
+
 def run_captured(argv: list[str], env: dict | None = None) -> tuple[int, str]:
     """Run `argv` on a pseudo-terminal wired to ours: the user sees it and types into it as usual (an
     interactive login needs a real terminal), and the final screen text is returned too (see render()).
     The child gets our window size, so what it draws looks right on the user's screen.
 
-    Ctrl+C three times within two seconds stops the child: some CLI screens (claude setup-token) only
+    Ctrl+C three times within four seconds stops the child: some CLI screens (claude setup-token) only
     clear their input on Ctrl+C and offer no other way out."""
     stdin_fd, stdout_fd = 0, 1
     pid, master = pty.fork()
@@ -251,7 +285,7 @@ def run_captured(argv: list[str], env: dict | None = None) -> tuple[int, str]:
                     continue
                 if b"\x03" in data:
                     now = time.monotonic()
-                    presses = [t for t in presses if now - t < 2.0] + [now] * data.count(b"\x03")
+                    presses = [t for t in presses if now - t < CTRL_C_WINDOW_S] + [now] * data.count(b"\x03")
                     if len(presses) >= 3:
                         _signal_group(pid, signal.SIGTERM)
                         kill_at = time.monotonic() + 2.0
@@ -259,6 +293,17 @@ def run_captured(argv: list[str], env: dict | None = None) -> tuple[int, str]:
                 os.write(master, data)
     finally:
         if saved is not None:
+            # We tell the user to press Ctrl+C three times, but some screens (claude auth login) end on the
+            # first press: swallow the rest of that triple press while the terminal is still raw, so it does
+            # not reach the setup itself as SIGINT and cancel everything.
+            if presses:
+                until = presses[0] + CTRL_C_WINDOW_S
+                while (left := until - time.monotonic()) > 0:
+                    if not select.select([stdin_fd], [], [], left)[0]:
+                        break
+                    data = os.read(stdin_fd, 4096)
+                    if not data or data.replace(b"\x03", b""):
+                        break
             termios.tcsetattr(stdin_fd, termios.TCSAFLUSH, saved)
         os.close(master)
         _, status = os.waitpid(pid, 0)

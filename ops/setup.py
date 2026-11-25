@@ -32,7 +32,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from core import engine
 from core.config import PROVIDERS, Config, atomic_write
@@ -224,13 +224,25 @@ def step_telegram(cfg: Config, ni: bool) -> None:
     cfg.update({"TELEGRAM_BOT_TOKEN": token, "TELEGRAM_BOT_USERNAME": str(me.get("username") or "")})
     say(f"  ✓ Bot @{me.get('username')} ({me.get('first_name', '')})")
     from doors.telegram.api import SyncApi, TgError
+    api = SyncApi(token, timeout=20)
     try:
-        hook = SyncApi(token, timeout=20).call("getWebhookInfo") or {}
-        if hook.get("url"):
-            say("  ! This bot has a webhook set (another service uses it?). Archi polls for updates and cannot "
-                "work while a webhook is set: remove it with deleteWebhook, or use a new bot.")
+        hook = api.call("getWebhookInfo") or {}
     except TgError:
-        pass
+        hook = {}
+    if hook.get("url"):
+        # Polling gets nothing while a webhook is set (409 Conflict forever), so the bot would never answer.
+        say("  ! This bot has a webhook set: another service receives its messages. Archi polls for updates and "
+            "cannot work while it is set.")
+        remove = env_flag("ARCHI_DELETE_WEBHOOK") if ni else ask_yes(
+            "  Remove the webhook (that other service stops getting this bot's messages)?", True)
+        if not remove:
+            raise SetupError("the bot has a webhook; remove it (ARCHI_DELETE_WEBHOOK=1 in an unattended install) "
+                             "or use a new bot")
+        try:
+            api.call("deleteWebhook")
+        except TgError as e:
+            raise SetupError(f"could not remove the webhook: {e.description}") from None
+        say("  ✓ Webhook removed")
 
 
 def choose_provider(cfg: Config, ni: bool, provider: str | None = None) -> str:
@@ -276,10 +288,13 @@ def login_claude(cfg: Config, ni: bool) -> None:
             cfg.set("CLAUDE_CODE_OAUTH_TOKEN", token)
         say("  ✓ Claude answered a test request")
         return
+    binary = cli_path("claude")
+    if not binary:
+        raise SetupError("Claude Code is not installed (was ARCHI_SKIP_CLI_INSTALL set?); run "
+                         "`archi setup provider claude` without it")
     ok, _why = test_claude(configured)
     if ok and not ask_yes("  Claude Code is already signed in (a test request works). Sign in again?", False):
         return
-    binary = cli_path("claude")
     say("Sign in with your Claude subscription. `claude setup-token` shows a link: open it in a browser on any\n"
         "device, approve, and paste the code you get back here. It then prints a token valid for one year,\n"
         "which Archi keeps in config/archi.env. (To cancel it, press Ctrl+C three times.)")
@@ -330,29 +345,31 @@ def codex_browser_login(binary: str) -> bool:
         proc.kill()
         say("  codex login did not print a sign-in link:\n" + seen.decode("utf-8", "replace")[-500:])
         return False
+    port = callback_port(url)
     say("Open this link in a browser on any device and sign in with your ChatGPT account:\n")
     say(url + "\n")
-    say("At the end the browser opens a page on 127.0.0.1:1455 (or localhost:1455) that fails to load. That is\n"
-        "expected: copy the full address from the address bar and paste it here.")
+    say(f"At the end the browser opens a page on localhost:{port} that fails to load. That is expected: copy\n"
+        "the full address from the address bar and paste it here.")
     try:
         for _ in range(3):
             pasted = ask_secret("Address of that page (hidden): ", join_paste=True)
             parts = urlsplit(pasted)
-            if not (parts.port == 1455 and parts.path.startswith("/auth/callback") and "code=" in parts.query):
-                say("  That is not it: the address starts with http://127.0.0.1:1455/auth/callback?code=")
+            if not (parts.path.startswith("/auth/callback") and "code=" in parts.query):
+                say(f"  That is not it: the address starts with http://localhost:{port}/auth/callback?code=")
                 continue
-            local = urlunsplit(("http", "127.0.0.1:1455", parts.path, parts.query, ""))
-            res = subprocess.run(["curl", "-sS", "--max-time", "30", "-o", "/dev/null", "-w", "%{http_code}",
-                                  local], capture_output=True, text=True, timeout=40)
-            status = res.stdout.strip()
-            if status.startswith(("2", "3")):
+            if parts.port not in (None, port):
+                say(f"  That address is for port {parts.port}, but this sign-in waits on port {port}: use the "
+                    "address from this sign-in attempt, the newest one.")
+                continue
+            status = deliver_callback(urlunsplit(("http", f"127.0.0.1:{port}", parts.path, parts.query, "")))
+            if status is not None and status < 400:
                 break
             say(f"  The sign-in server here refused that address (HTTP {status or 'error'}): use the address "
                 "from this sign-in attempt, the newest one.")
         else:
             proc.kill()
             return False
-        rest, _ = proc.communicate(timeout=90)
+        rest, _ = proc.communicate(timeout=60)
         out = (seen + (rest or b"")).decode("utf-8", "replace")
     except subprocess.TimeoutExpired:
         proc.kill()
@@ -367,6 +384,29 @@ def codex_browser_login(binary: str) -> bool:
     return proc.returncode == 0
 
 
+def callback_port(login_url: str) -> int:
+    """The port `codex login` listens on, from the redirect_uri of its sign-in link (1455 unless that port was
+    taken, then codex picks another)."""
+    try:
+        redirect = parse_qs(urlsplit(login_url).query).get("redirect_uri", [""])[0]
+        return urlsplit(redirect).port or 1455
+    except ValueError:
+        return 1455
+
+
+def deliver_callback(local_url: str) -> int | None:
+    """GET the pasted callback on this machine, following codex's redirect to its /success page (codex exits
+    only after that page was requested). Returns the final HTTP status, None when nothing answered. The
+    address carries a one-time code, so it stays in this process (no curl command line)."""
+    try:
+        with urllib.request.urlopen(local_url, timeout=30) as res:
+            return res.status
+    except urllib.error.HTTPError as e:
+        return e.code
+    except (urllib.error.URLError, OSError):
+        return None
+
+
 def login_codex(cfg: Config, ni: bool) -> None:
     ok, why = test_codex()
     if ni:
@@ -378,6 +418,9 @@ def login_codex(cfg: Config, ni: bool) -> None:
     if ok and not ask_yes("  Codex is already signed in (a test request works). Sign in again?", False):
         return
     binary = cli_path("codex")
+    if not binary:
+        raise SetupError("Codex is not installed (was ARCHI_SKIP_CLI_INSTALL set?); run "
+                         "`archi setup provider codex` without it")
     helptext = subprocess.run([binary, "login", "--help"], capture_output=True, text=True, timeout=30,
                               env=cli_env()).stdout
     done = False
@@ -601,6 +644,22 @@ def ensure_defaults(cfg: Config) -> None:
         cfg.update(changes)
 
 
+def provider_ready(cfg: Config, ni: bool) -> tuple[bool, str]:
+    """(ready, why not): the configured provider's CLI is installed and answers a test request."""
+    provider = cfg.provider()
+    if not cli_path(provider):
+        return False, f"{CLI[provider]['title']} is not installed"
+    if provider == "claude":
+        token = cfg.get("CLAUDE_CODE_OAUTH_TOKEN") or None
+        given = os.environ.get("ARCHI_CLAUDE_OAUTH_TOKEN", "").strip() if ni else ""
+        if given and given != token:
+            return False, "a new ARCHI_CLAUDE_OAUTH_TOKEN was given"
+        ok, why = test_claude(token)
+    else:
+        ok, why = test_codex()
+    return ok, ("" if ok else (why or "the test request failed"))
+
+
 def describe(cfg: Config) -> str:
     owner = cfg.owner_id()
     return (f"bot @{cfg.get('TELEGRAM_BOT_USERNAME') or '?'}, provider {cfg.provider()}, "
@@ -613,8 +672,19 @@ def onboard(cfg: Config, ni: bool) -> int:
         say(f"An existing configuration was found: {describe(cfg)}.")
         keep = (not env_flag("ARCHI_RECONFIGURE")) if ni else ask_yes("Keep it?", True)
         if keep:
-            say("Keeping the existing configuration" + (" (ARCHI_RECONFIGURE=1 replaces it)." if ni else "."))
             ensure_defaults(cfg)
+            say("Checking the AI subscription …")
+            ready, why = provider_ready(cfg, ni)
+            if ready:
+                say("Keeping the existing configuration" + (" (ARCHI_RECONFIGURE=1 replaces it)." if ni else "."))
+                return 0
+            # A previous run stopped at the sign-in (the step most likely to fail): resume there instead of
+            # reporting success for an agent that cannot answer.
+            say(f"Keeping the bot and the other settings, but the AI subscription is not ready: {why}.")
+            say("\n[2/3] AI subscription")
+            step_provider(cfg, ni)
+            ensure_defaults(cfg)
+            say(f"\n✓ Configuration saved: {cfg.path} (mode 600)")
             return 0
     ensure_defaults(cfg)
     say("\n[1/3] Telegram bot")
@@ -675,6 +745,11 @@ def wait_for_owner(cfg: Config, timeout: float, *, out=say, poll: float = 2.0) -
                 sys.stdout.write("\r" + " " * 60 + "\r")
             out(f"✓ Paired with Telegram user {owner}. Your agent is writing its first message to you there now.")
             return 0
+        if not cfg.get("PAIRING_CODE"):
+            if live:
+                sys.stdout.write("\n")
+            out("The pairing code was revoked after too many wrong attempts. Run `archi pair` for a new one.")
+            return 1
         if elapsed >= timeout:
             break
         if live:

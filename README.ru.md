@@ -70,12 +70,16 @@ curl -fsSL https://raw.githubusercontent.com/Evenorchik/archi/main/install.sh | 
 оставляет за своими командами.
 
 ### Установка без вопросов
-На каждый вопрос установщика есть переменная окружения, список в начале `install.sh`. Например:
+На каждый вопрос установщика есть переменная окружения (список в начале `install.sh`). Например:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Evenorchik/archi/main/install.sh | \
   ARCHI_NONINTERACTIVE=1 ARCHI_BOT_TOKEN=<токен бота> ARCHI_PROVIDER=claude \
   ARCHI_CLAUDE_OAUTH_TOKEN=<токен из claude setup-token> bash
 ```
+`claude setup-token` выдаёт токен на год на любой машине, где вы можете войти в Claude. У Codex такого токена
+нет: один раз войдите на сервере командой `codex login --device-auth` (или скопируйте туда `~/.codex/auth.json`),
+потом ставьте с `ARCHI_PROVIDER=codex`. Если у бота настроен вебхук, Archi не получит сообщений:
+`ARCHI_DELETE_WEBHOOK=1` его снимет.
 
 ## Разработка
 ```bash

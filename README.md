@@ -57,12 +57,15 @@ reconfigure.
 - `archi job list`: durable jobs; `archi learn status`: how the learning loop is set up
 
 ### Unattended install
-Every question has an environment variable, see the header of `install.sh`. For example:
+Every question has an environment variable (the list is in the header of `install.sh`). For example:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Evenorchik/archi/main/install.sh | \
   ARCHI_NONINTERACTIVE=1 ARCHI_BOT_TOKEN=<bot token> ARCHI_PROVIDER=claude \
   ARCHI_CLAUDE_OAUTH_TOKEN=<token from claude setup-token> bash
 ```
+`claude setup-token` prints a one-year token on any machine where you can sign in. Codex has no such token:
+sign in on the server once with `codex login --device-auth` (or copy `~/.codex/auth.json` there), then install
+with `ARCHI_PROVIDER=codex`. A bot that has a webhook cannot be polled: `ARCHI_DELETE_WEBHOOK=1` removes it.
 
 ## Element / Matrix door
 Archi can also answer you in Element or any other Matrix client, next to Telegram. Give the bot its own Matrix
