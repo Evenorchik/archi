@@ -60,14 +60,16 @@ def attachment(content: dict) -> Attachment | None:
 
 
 async def fetch(api, att: Attachment) -> bytes:
+    """The attachment's bytes. MxError when it cannot be downloaded, ValueError when an encrypted attachment
+    cannot be decrypted (nio raises its own EncryptionError for a wrong hash, which is no ValueError)."""
     data = await api.download(att.url)
     if att.encrypted:
         from nio.crypto.attachments import decrypt_attachment
         try:
             data = decrypt_attachment(data, att.encrypted["key"]["k"], att.encrypted["hashes"]["sha256"],
                                       att.encrypted["iv"])
-        except (KeyError, TypeError, ValueError) as e:
-            raise ValueError(f"the attachment could not be decrypted ({e})") from None
+        except Exception as e:  # noqa: BLE001 - EncryptionError, KeyError, binascii errors, …
+            raise ValueError(f"the attachment could not be decrypted ({type(e).__name__}: {e})") from None
     return data
 
 

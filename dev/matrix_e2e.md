@@ -2,8 +2,9 @@
 
 Run on 2026-11-25 against a throwaway continuwuity 26.7.2 homeserver in a container (image
 `forgejo.ellis.link/continuwuation/continuwuity:v26.7.2`), with the door from this checkout and the FAKE agent CLI
-(`tests/fake_cli.py` behind `CLAUDE_BIN` and `CODEX_BIN`, never the real claude or codex). Result: **61/61 checks
-passed** on the last two runs, each from a freshly created server. Nothing of it lands in the working tree: passwords are generated
+(`tests/fake_cli.py` behind `CLAUDE_BIN` and `CODEX_BIN`, never the real claude or codex). Result: **65/65 checks
+passed** (after the review fixes of the door layer; 61/61 before the outage checks were added), each run from a
+freshly created server. Nothing of it lands in the working tree: passwords are generated
 per run and kept in memory, the bot's token lives only in the temporary `ARCHI_HOME`, which is deleted with the
 container and its volume at the end.
 
@@ -25,10 +26,12 @@ python3 dev/matrix_e2e.py            # --port 18008 (default), --keep to inspect
 4. Starts `python -m doors.matrix` with `ARCHI_HOME` in the temporary directory, drives it through the client API as
    the owner and as the stranger, watching the bot's events (messages, notices, edits, reactions, redactions,
    typing, membership) with the owner's own sync, and reads `state/` and the fake CLI's log for what the agent got.
-5. Stops the door with SIGTERM during a turn, starts it again, checks the restart behaviour, stops it, removes the
+5. Stops the homeserver container while a turn is finishing, so the answer cannot be delivered, then starts it
+   again.
+6. Stops the door with SIGTERM during a turn, starts it again, checks the restart behaviour, stops it, removes the
    container, the volume and the temporary directory.
 
-## What was checked (61/61 passed)
+## What was checked (65/65 passed)
 - Setup: exit 0; `config/archi.env` (mode 600) holds MATRIX_HOMESERVER, MATRIX_USER_ID, MATRIX_ACCESS_TOKEN,
   MATRIX_DEVICE_ID, MATRIX_OWNER_ID and not the password; the token is never printed; the unit
   `archi-matrix.service` (`-m doors.matrix`) is written to the temporary unit directory and reported as not
@@ -64,15 +67,24 @@ python3 dev/matrix_e2e.py            # --port 18008 (default), --keep to inspect
   `doors.matrix.notify.post()` delivers a notice.
 - `archi status` shows the bot, homeserver, owner, rooms, the encrypted rooms ignored and the service line, without
   the token. `archi validate` passes and dry-starts the Matrix door.
+- An outage: with the homeserver stopped while a slow turn finished, the answer could not be sent; after the
+  bounded retries it was kept in `state/outbox/` (mode 0600). Once the server was started again it arrived marked
+  as late ("Delivered late: this answer was ready at …"), exactly once, the outbox was empty again, and the
+  owner's message ended with ✅.
 - Restart: SIGTERM during a hanging turn stops the door cleanly (exit 0), the run marker stays, the agent's process
   tree (the fake CLI and its child) is killed; the next start tells that room the task was interrupted, replays
   nothing (no answer to any earlier message), answers a new message, and the sync token is persisted in
   `state/matrix.json`. No traceback in either door log.
 
 ## Found and fixed by this test
-matrix-nio's `join()` (and `room_leave()`) send no request body; continuwuity answers the join with
-`M_BAD_JSON`, so the first run never entered a room the owner invited it to (stranger invites were still rejected,
-and leaving happened to work). Joins and leaves now go through nio's HTTP session with `{}`, like /sync.
+- matrix-nio's `join()` (and `room_leave()`) send no request body; continuwuity answers the join with
+  `M_BAD_JSON`, so the first run never entered a room the owner invited it to (stranger invites were still
+  rejected, and leaving happened to work). Joins and leaves now go through nio's HTTP session with `{}`, like /sync.
+- With room members tracked (so nothing is posted where the owner is not), the bot's sync saw a room made by
+  `archi mx room create` while createRoom was still running: the bot's join was there, the owner's invite not yet,
+  and the door left the room as "the owner is not in it". The door now leaves only on evidence (the owner left or
+  was banned, or was never in the room at the first start); a room where the owner is not there yet is kept and
+  nothing is posted into it until the owner's membership arrives.
 
 ## Not covered live (unit tests only)
 - A real voice note transcribed and a `[VOICE]` answer synthesized (both need an OpenAI key and send audio to

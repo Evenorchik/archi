@@ -14,6 +14,7 @@ Both clients raise MxError(errcode, error, status).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import secrets
@@ -21,6 +22,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from typing import Any
 
 MXID_RE = re.compile(r"^@[^:\s]+:[^\s]+$")
@@ -40,6 +42,11 @@ class MxError(Exception):
     def fatal(self) -> bool:
         """The access token is not (or no longer) valid: nothing will work until `archi setup matrix`."""
         return self.errcode in ("M_UNKNOWN_TOKEN", "M_MISSING_TOKEN") or self.status == 401
+
+    @property
+    def transient(self) -> bool:
+        """A failure that may pass: the network (status 0), a rate limit, a server error."""
+        return not self.fatal and (self.status == 0 or self.status == 429 or self.status >= 500)
 
     @property
     def not_in_room(self) -> bool:
@@ -104,13 +111,20 @@ class SyncApi:
         return out if isinstance(out, dict) else {}
 
     # ------------------------------------------------------------------ account
-    def login(self, user: str, password: str, device_name: str = "Archi") -> dict:
-        """-> {user_id, access_token, device_id}. `user` is a localpart or a full @name:server."""
-        res = self.call("POST", "/_matrix/client/v3/login", {
-            "type": "m.login.password", "identifier": {"type": "m.id.user", "user": user},
-            "password": password, "initial_device_display_name": device_name})
+    def login(self, user: str, password: str, device_name: str = "Archi", device_id: str = "") -> dict:
+        """-> {user_id, access_token, device_id}. `user` is a localpart or a full @name:server. With
+        `device_id` the server signs that device in again instead of creating a new one."""
+        body = {"type": "m.login.password", "identifier": {"type": "m.id.user", "user": user},
+                "password": password, "initial_device_display_name": device_name}
+        if device_id:
+            body["device_id"] = device_id
+        res = self.call("POST", "/_matrix/client/v3/login", body)
         return {"user_id": res.get("user_id", ""), "access_token": res.get("access_token", ""),
                 "device_id": res.get("device_id", "")}
+
+    def logout(self) -> None:
+        """Invalidate this client's access token (and remove its device)."""
+        self.call("POST", "/_matrix/client/v3/logout", {})
 
     def whoami(self) -> dict:
         return self.call("GET", "/_matrix/client/v3/account/whoami")
@@ -211,10 +225,24 @@ def resolve_homeserver(server: str, timeout: float = 10) -> tuple[str, bool]:
 
 # =========================================================================================== door client
 
+def strip_token(path: str) -> str:
+    """nio's path builders put `access_token=` into the query string. A URL ends up in proxy and server access
+    logs, and query-string authentication is deprecated (spec v1.11): it is removed here and the token goes in
+    the Authorization header instead (nio's own typed calls do the same in their _send)."""
+    parts = urllib.parse.urlsplit(path)
+    query = [(k, v) for k, v in urllib.parse.parse_qsl(parts.query, keep_blank_values=True) if k != "access_token"]
+    return urllib.parse.urlunsplit(("", "", parts.path, urllib.parse.urlencode(query), ""))
+
+
 class MxApi:
-    """Async access for the door, through matrix-nio (no end-to-end encryption)."""
+    """Async access for the door, through matrix-nio (no end-to-end encryption).
+
+    Every method raises MxError, also for transport failures (connection refused or reset, the server gone
+    away, a timeout): those come as MxError("ARCHI_NETWORK", …, status 0), so a caller handles one exception
+    type and can tell a passing failure (status 0, 429, 5xx) from a refusal."""
 
     def __init__(self, homeserver: str, user_id: str, token: str, device_id: str = ""):
+        import aiohttp
         from nio import AsyncClient, AsyncClientConfig   # imported here: the CLI and the tests never need nio
         self.homeserver = homeserver.rstrip("/")
         config = AsyncClientConfig(max_limit_exceeded=4, max_timeouts=3, request_timeout=60,
@@ -222,8 +250,26 @@ class MxApi:
         self.client = AsyncClient(self.homeserver, user_id, device_id=device_id or None, config=config)
         self.client.access_token = token
         self.client.user_id = user_id
+        self._transport_errors = (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError, ConnectionError, OSError)
         self._upload_limit: int | None = None
         self._limit_known = False
+
+    @property
+    def token(self) -> str:
+        return self.client.access_token or ""
+
+    def set_token(self, token: str) -> None:
+        """Use another access token from now on (`archi setup matrix` replaced it while the door ran)."""
+        self.client.access_token = token
+
+    @contextmanager
+    def _transport(self, what: str):
+        try:
+            yield
+        except MxError:
+            raise
+        except self._transport_errors as e:
+            raise MxError("ARCHI_NETWORK", f"{what}: {type(e).__name__}: {e}".rstrip(": "), 0) from None
 
     @staticmethod
     def _check(resp, what: str):
@@ -241,21 +287,25 @@ class MxApi:
             pass
 
     async def whoami(self) -> dict:
-        r = self._check(await self.client.whoami(), "whoami")
+        with self._transport("whoami"):
+            r = self._check(await self.client.whoami(), "whoami")
         return {"user_id": r.user_id, "device_id": r.device_id}
 
     async def _raw(self, method: str, path: str, body: dict | None = None, timeout: float | None = None) -> dict:
-        """One request through nio's HTTP session, answered as plain JSON (MxError when it is not a 200)."""
-        if self.client.client_session is None:      # nio creates its HTTP session on the first typed call
-            await self.whoami()
-        data = json.dumps(body) if body is not None else None
-        resp = await self.client.send(method, path, data=data,
-                                      headers={"Content-Type": "application/json"} if data is not None else None,
-                                      timeout=timeout)
-        try:
-            raw = await resp.text()
-        finally:
-            resp.release()
+        """One request through nio's HTTP session, answered as plain JSON (MxError when it is not a 200). The
+        token goes in the Authorization header, never in the URL."""
+        with self._transport(f"{method} {strip_token(path).split('?', 1)[0]}"):
+            if self.client.client_session is None:      # nio creates its HTTP session on the first typed call
+                await self.whoami()
+            data = json.dumps(body) if body is not None else None
+            headers = {"Authorization": f"Bearer {self.client.access_token}"}
+            if data is not None:
+                headers["Content-Type"] = "application/json"
+            resp = await self.client.send(method, strip_token(path), data=data, headers=headers, timeout=timeout)
+            try:
+                raw = await resp.text()
+            finally:
+                resp.release()
         try:
             out = json.loads(raw or "{}")
         except ValueError:
@@ -274,16 +324,22 @@ class MxApi:
                                 filter=sync_filter)
         return await self._raw(method, path, timeout=timeout_ms / 1000 + 30)
 
-    async def send(self, room_id: str, event_type: str, content: dict) -> str:
-        r = self._check(await self.client.room_send(room_id, event_type, content, tx_id=txn_id()), "send")
+    async def send(self, room_id: str, event_type: str, content: dict, txn: str | None = None) -> str:
+        """Send an event. Retries of one message must pass the same `txn`: the server then stores it once,
+        even when an earlier try reached it and only the answer was lost."""
+        with self._transport("send"):
+            r = self._check(await self.client.room_send(room_id, event_type, content, tx_id=txn or txn_id()),
+                            "send")
         return r.event_id
 
     async def redact(self, room_id: str, event_id: str, reason: str | None = None) -> str:
-        r = self._check(await self.client.room_redact(room_id, event_id, reason=reason), "redact")
+        with self._transport("redact"):
+            r = self._check(await self.client.room_redact(room_id, event_id, reason=reason), "redact")
         return r.event_id
 
     async def typing(self, room_id: str, on: bool = True, timeout_ms: int = 30000) -> None:
-        self._check(await self.client.room_typing(room_id, typing_state=on, timeout=timeout_ms), "typing")
+        with self._transport("typing"):
+            self._check(await self.client.room_typing(room_id, typing_state=on, timeout=timeout_ms), "typing")
 
     async def join(self, room_id: str) -> str:
         # nio's join() and room_leave() send no request body; the spec's body is a JSON object and stricter
@@ -297,22 +353,50 @@ class MxApi:
         method, path = Api.room_leave(self.client.access_token, room_id)
         await self._raw(method, path, {})
 
+    async def create_room(self, name: str, invite: list[str]) -> str:
+        """A private room without encryption; invitees get the creator's power level (trusted_private_chat)."""
+        body = {"name": name, "preset": "trusted_private_chat", "visibility": "private",
+                "invite": [u for u in invite if u]}
+        return str((await self._raw("POST", "/_matrix/client/v3/createRoom", body)).get("room_id") or "")
+
+    async def members(self, room_id: str) -> dict[str, str]:
+        """{user id: membership} of a room, from its member events."""
+        path = f"/_matrix/client/v3/rooms/{urllib.parse.quote(room_id, safe='')}/members"
+        out = {}
+        for ev in (await self._raw("GET", path, timeout=60)).get("chunk") or []:
+            if ev.get("type") == "m.room.member" and ev.get("state_key"):
+                out[str(ev["state_key"])] = str((ev.get("content") or {}).get("membership") or "")
+        return out
+
+    async def state_event(self, room_id: str, event_type: str, state_key: str = "") -> dict | None:
+        path = (f"/_matrix/client/v3/rooms/{urllib.parse.quote(room_id, safe='')}/state/"
+                f"{urllib.parse.quote(event_type, safe='')}/{urllib.parse.quote(state_key, safe='')}")
+        try:
+            return await self._raw("GET", path)
+        except MxError as e:
+            if e.status == 404 or e.errcode == "M_NOT_FOUND":
+                return None
+            raise
+
     async def upload(self, data: bytes, content_type: str, filename: str) -> str:
-        resp, _keys = await self.client.upload(lambda *_: data, content_type=content_type, filename=filename,
-                                               filesize=len(data))
-        return self._check(resp, "upload").content_uri
+        with self._transport("upload"):
+            resp, _keys = await self.client.upload(lambda *_: data, content_type=content_type, filename=filename,
+                                                   filesize=len(data))
+            return self._check(resp, "upload").content_uri
 
     async def download(self, mxc: str) -> bytes:
-        r = self._check(await self.client.download(mxc=mxc), "download")
+        with self._transport("download"):
+            r = self._check(await self.client.download(mxc=mxc), "download")
         return r.body
 
     async def upload_limit(self) -> int | None:
         """The server's largest accepted upload in bytes (None: not announced)."""
         if not self._limit_known:
             try:
-                r = await self.client.content_repository_config()
+                with self._transport("media config"):
+                    r = await self.client.content_repository_config()
                 self._upload_limit = getattr(r, "upload_size", None)
-            except Exception:
+                self._limit_known = True
+            except Exception:  # noqa: BLE001 - unknown limit: try the upload, the server says no if needed
                 self._upload_limit = None
-            self._limit_known = True
         return self._upload_limit

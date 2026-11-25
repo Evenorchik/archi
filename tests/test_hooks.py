@@ -100,7 +100,7 @@ def test_finished_jobs_are_reported_by_a_turn(tmp_path, monkeypatch):
         assert await door.report_jobs() == 0                # reported once
 
     go(scenario())
-    assert reported == ["j1", "j2"]
+    assert sorted(reported) == ["j1", "j2"]                 # marked as each report is delivered
     prompts = [c["prompt"] for c in runner.calls]
     assert any(p.endswith("[job j1 ok]") for p in prompts) and any(p.endswith("[job j2 failed]") for p in prompts)
     convs = {c["env"]["ARCHI_CONVERSATION"] for c in runner.calls}
