@@ -118,6 +118,12 @@ def install_unit(door: str = "telegram", *, start: bool = True, home: Path | str
         print(f"{unit_name(door)}: installed{' (updated)' if changed else ''}, enabled")
         return 0
     was_active = unit_state(door).get("ActiveState") == "active"
+    if was_active and not changed:
+        # Already running this unit (an installer re-run): restart only when that kills no turn.
+        if not wait_idle(home, max_wait=120, out=print):
+            print(f"{unit_name(door)}: running; turns are busy, so it was not restarted (later: archi restart "
+                  "--when-idle)")
+            return 0
     res = systemctl("restart" if (changed or was_active) else "start", unit_name(door))
     if res.returncode != 0:
         print(f"{unit_name(door)}: start failed: {res.stderr.strip()}", file=sys.stderr)

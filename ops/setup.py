@@ -146,6 +146,14 @@ def find_oauth_token(text: str) -> str | None:
     return found
 
 
+def find_login_url(text: str) -> str | None:
+    """The OAuth link `codex login` prints (it waits for the redirect on 127.0.0.1:1455)."""
+    for m in re.finditer(r"https://\S+", text):
+        if "authorize" in m.group(0) or "oauth" in m.group(0):
+            return m.group(0)
+    return None
+
+
 def test_claude(token: str | None) -> tuple[bool, str]:
     """One real request, the way a turn makes it: with the token when given, else with the CLI's own
     login. Run in an empty directory so no CLAUDE.md steers the answer."""
@@ -305,19 +313,20 @@ def codex_browser_login(binary: str) -> bool:
     """`codex login` waits for its browser redirect on 127.0.0.1:1455 of THIS machine. On a server the
     user's browser cannot reach it, so the final address is pasted here and delivered with curl."""
     proc = subprocess.Popen([binary, "login"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, env=cli_env())
-    url, seen, end = None, [], time.time() + 30
+                            stderr=subprocess.STDOUT, env=cli_env())
     assert proc.stdout is not None
-    while url is None and time.time() < end and proc.poll() is None:
-        if select.select([proc.stdout], [], [], 0.5)[0]:
-            line = proc.stdout.readline()
-            seen.append(line)
-            m = re.search(r"https://\S+", line)
-            if m and ("authorize" in m.group(0) or "oauth" in m.group(0)):
-                url = m.group(0)
+    fd = proc.stdout.fileno()
+    seen, url, end = b"", None, time.time() + 30
+    while url is None and time.time() < end:
+        if select.select([fd], [], [], 0.5)[0]:
+            chunk = os.read(fd, 65536)      # raw reads: a buffered readline would hide lines from select()
+            if not chunk:
+                break
+            seen += chunk
+            url = find_login_url(term.strip_ansi(seen.decode("utf-8", "replace")))
     if not url:
         proc.kill()
-        say("  codex login did not print a sign-in link:\n" + "".join(seen[-5:]))
+        say("  codex login did not print a sign-in link:\n" + seen.decode("utf-8", "replace")[-500:])
         return False
     say("Open this link in a browser on any device and sign in with your ChatGPT account:\n")
     say(url + "\n")
@@ -335,7 +344,8 @@ def codex_browser_login(binary: str) -> bool:
             return False
         local = urlunsplit(("http", "127.0.0.1:1455", parts.path, parts.query, ""))
         subprocess.run(["curl", "-sS", "--max-time", "30", "-o", "/dev/null", local], timeout=40)
-        out, _ = proc.communicate(timeout=90)
+        rest, _ = proc.communicate(timeout=90)
+        out = (seen + (rest or b"")).decode("utf-8", "replace")
     except subprocess.TimeoutExpired:
         proc.kill()
         say("  codex login did not finish after the address was delivered")
@@ -343,7 +353,7 @@ def codex_browser_login(binary: str) -> bool:
     finally:
         if proc.poll() is None:
             proc.kill()
-    tail = (out or "").strip().splitlines()[-2:]
+    tail = term.strip_ansi(out).strip().splitlines()[-2:]
     if tail:
         say("  " + "\n  ".join(tail))
     return proc.returncode == 0
@@ -405,6 +415,8 @@ def step_voice(cfg: Config, ni: bool, *, remove: bool = False, key_from_stdin: b
     if ni or key_from_stdin:
         key = (sys.stdin.readline() if key_from_stdin else os.environ.get("ARCHI_OPENAI_KEY", "")).strip()
         if not key:
+            say("  No OpenAI key given (ARCHI_OPENAI_KEY): voice notes stay off; add one later with "
+                "`archi setup voice`.")
             return
         verdict = check_openai_key(key)
         if verdict is False:

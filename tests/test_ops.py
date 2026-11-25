@@ -236,6 +236,14 @@ def test_find_oauth_token_unwrapped_wrapped_and_framed():
     assert setup.find_oauth_token("Paste code here if prompted >") is None
 
 
+def test_find_login_url():
+    text = ("Starting local login server on http://localhost:1455.\nIf your browser did not open, navigate to "
+            "this URL to authenticate:\n\nhttps://auth.openai.com/oauth/authorize?response_type=code&state=x\n\n"
+            "On a remote or headless machine? Use `codex login --device-auth` instead.\n")
+    assert setup.find_login_url(text) == "https://auth.openai.com/oauth/authorize?response_type=code&state=x"
+    assert setup.find_login_url("Starting local login server on http://localhost:1455.") is None
+
+
 def test_noninteractive_onboarding_writes_the_config(tmp_path, monkeypatch):
     cfg = Config(tmp_path)
     monkeypatch.setattr(setup, "check_bot_token", lambda t: (True, {"username": "test_bot", "first_name": "T"}))
